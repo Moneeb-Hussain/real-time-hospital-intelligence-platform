@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import Link from 'next/head'
+import Link from 'next/link'
 import { minutesAgo, cn } from '@/lib/utils'
 import type { Patient } from '@/types'
 
