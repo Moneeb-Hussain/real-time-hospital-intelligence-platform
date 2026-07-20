@@ -1,7 +1,8 @@
 import { USE_FIXTURES, fixtureKpis, fixturePatients, fixtureRecommendations, fixtureActivityLog, fixtureSnapshot, fixtureDepartments, fixturePriorityMix, fixtureAdmissions7d, fixtureWaitTrend, fixtureDoctorWorkload } from '@/lib/fixtures'
 import type { KpiData, Patient, Alert, Recommendation, HospitalSnapshot, DepartmentStatus, Doctor, ChartDataPoint, ActivityLog } from '@/types'
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// Empty in production so Vercel rewrites `/api/*` to the FastAPI service.
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000')
 
 async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   const fullUrl = url.startsWith('http') ? url : `${BASE_URL}${url}`

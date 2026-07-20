@@ -1,0 +1,64 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "root": "frontend",
+      "framework": "nextjs"
+    },
+    "backend": {
+      "root": ".",
+      "framework": "fastapi",
+      "entrypoint": "main:app",
+      "functions": {
+        "main.py": {
+          "maxDuration": 60,
+          "excludeFiles": "{.venv/**,frontend/**,**/__pycache__/**,**/node_modules/**,**/.git/**,.vscode/**}"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/patients",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/patients/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/resources",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/resources/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/backend/(.*)",
+      "destination": {
+        "service": "backend"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
+      }
+    }
+  ]
+}
