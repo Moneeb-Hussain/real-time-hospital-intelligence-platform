@@ -1,0 +1,67 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-bg-page text-text-primary font-sans antialiased;
+  }
+
+  /* All vitals and scores use tabular numbers to prevent layout shift */
+  .vitals, .score, .metric {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Thin scrollbar for panels */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+}
+
+@layer components {
+  /* Base card — used by every dashboard widget */
+  .card {
+    @apply bg-bg-card border border-border rounded-card shadow-card transition-all duration-300;
+  }
+  .card:hover {
+    @apply shadow-card-hover -translate-y-1 border-border-strong;
+  }
+
+  /* AI content always gets purple left border and purple tint */
+  .ai-content {
+    @apply border-l-4 border-ai bg-ai-50 rounded-r-card;
+  }
+
+  /* Priority badge base */
+  .priority-badge {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-chip text-xs font-semibold;
+  }
+
+  /* Vital sign chip */
+  .vital-chip {
+    @apply inline-flex flex-col items-center px-3 py-2 rounded-button bg-bg-page border border-border;
+  }
+
+  /* Sidebar nav item */
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-button text-text-sidebar
+           text-sm font-medium transition-all duration-150 cursor-pointer select-none;
+  }
+  .nav-item:hover { @apply bg-bg-sidebar-hover text-text-sidebar-active; }
+  .nav-item.active { @apply bg-brand text-white; }
+
+  /* Realtime row update flash */
+  .realtime-update { animation: row-flash 1.2s ease-out; }
+
+  /* Confidence bar fill */
+  .confidence-bar { @apply h-2 rounded-full transition-all duration-700; }
+}
