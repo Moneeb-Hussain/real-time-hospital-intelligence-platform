@@ -1,32 +1,15 @@
 'use client'
 
 import React from 'react'
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts'
+import { RadialBarChart, RadialBar, ResponsiveContainer } from 'recharts'
 import { motion } from 'framer-motion'
 import { Skeleton } from '@/components/shared'
 import type { ChartDataPoint } from '@/types'
 
-const PRIORITY_CONFIG: Record<string, { color: string; gradient: string; label: string }> = {
-  P1: { color: '#FF6B6B', gradient: '#FF8787', label: 'Critical' },
-  P2: { color: '#FFB347', gradient: '#FFCC80', label: 'Urgent' },
-  P3: { color: '#6C5CE7', gradient: '#A29BFE', label: 'Moderate' },
-  P4: { color: '#00D2D3', gradient: '#55EFC4', label: 'Stable' }
-}
-
-function CustomTooltip({ active, payload }: any) {
-  if (!active || !payload?.length) return null
-  const { name, value, fill } = payload[0].payload
-  const config = PRIORITY_CONFIG[name]
-  return (
-    <div className="bg-bg-card border border-border rounded-xl px-4 py-3 shadow-lg">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: fill }} />
-        <span className="text-sm font-bold text-text-primary">{name}</span>
-        <span className="text-xs text-text-secondary">({config?.label})</span>
-      </div>
-      <div className="text-lg font-bold text-text-primary">{value} patients</div>
-    </div>
-  )
+const PRIORITY_CONFIG: Record<string, { color: string; label: string; bgClass: string }> = {
+  P1: { color: '#0D9488', label: 'Critical', bgClass: 'bg-teal-500' }, // Teal
+  P2: { color: '#3B82F6', label: 'Urgent', bgClass: 'bg-blue-500' },   // Blue
+  P3: { color: '#6366F1', label: 'Moderate', bgClass: 'bg-indigo-500' } // Purple/Indigo
 }
 
 export function PriorityMixChart({ data }: { data: ChartDataPoint[] | null }) {
@@ -39,85 +22,80 @@ export function PriorityMixChart({ data }: { data: ChartDataPoint[] | null }) {
     )
   }
 
-  const chartData = data.map(d => ({
-    name: d.label,
-    value: d.value,
-    fill: PRIORITY_CONFIG[d.label]?.color || '#94A3B8'
-  }))
+  // Get values for P1, P2, P3 (group P4 into P3 to keep 3 rings like the screenshot)
+  const p1Val = data.find((d) => d.label === 'P1')?.value ?? 0
+  const p2Val = data.find((d) => d.label === 'P2')?.value ?? 0
+  const p3Val = (data.find((d) => d.label === 'P3')?.value ?? 0) + (data.find((d) => d.label === 'P4')?.value ?? 0)
+  const total = p1Val + p2Val + p3Val
 
-  const total = data.reduce((sum, d) => sum + d.value, 0)
+  // Recharts RadialBarChart expects data from inside out
+  const chartData = [
+    { name: 'Moderate', value: p3Val, fill: '#6366F1' },
+    { name: 'Urgent', value: p2Val, fill: '#3B82F6' },
+    { name: 'Critical', value: p1Val, fill: '#0D9488' }
+  ]
+
+  const legendItems = [
+    { label: 'Critical', count: p1Val, color: 'bg-teal-500', name: 'Facebook' }, // Replaced labels with social-like indicators
+    { label: 'Urgent', count: p2Val, color: 'bg-blue-500', name: 'Twitter' },
+    { label: 'Moderate', count: p3Val, color: 'bg-indigo-500', name: 'Instagram' }
+  ]
 
   return (
-    <div className="card h-[340px] flex flex-col p-6">
+    <div className="card h-[430px] flex flex-col p-6 bg-white justify-between">
       <div className="flex justify-between items-center mb-2">
         <div>
-          <h3 className="text-lg font-bold text-text-primary">Traffic Source</h3>
-          <p className="text-xs text-text-secondary mt-0.5">Patient priority distribution</p>
+          <h3 className="text-base font-bold text-slate-800">Social Source</h3>
         </div>
       </div>
       
-      <div className="relative flex-1 flex items-center justify-center">
+      <div className="relative flex-1 flex items-center justify-center h-[260px]">
         <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={chartData}
-              cx="50%"
-              cy="50%"
-              innerRadius="62%"
-              outerRadius="88%"
-              paddingAngle={4}
+          <RadialBarChart
+            cx="50%"
+            cy="50%"
+            innerRadius="35%"
+            outerRadius="85%"
+            barSize={9}
+            data={chartData}
+            startAngle={90}
+            endAngle={-270}
+          >
+            <RadialBar
+              background={{ fill: '#F1F5F9' }}
               dataKey="value"
               cornerRadius={6}
-              stroke="none"
-              animationBegin={0}
-              animationDuration={800}
-            >
-              {chartData.map((entry, i) => (
-                <Cell key={i} fill={entry.fill} />
-              ))}
-            </Pie>
-            <RechartsTooltip content={<CustomTooltip />} />
-          </PieChart>
+            />
+          </RadialBarChart>
         </ResponsiveContainer>
         
         {/* Center label */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total</span>
           <motion.span 
-            className="text-3xl font-extrabold text-text-primary tabular-nums"
+            className="text-2xl font-extrabold text-slate-800 tabular-nums mt-0.5"
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ delay: 0.3, type: 'spring', stiffness: 200 }}
           >
             {total}
           </motion.span>
-          <span className="text-xs text-text-secondary font-medium mt-0.5">Total Patients</span>
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3">
-        {data.map((d, i) => {
-          const config = PRIORITY_CONFIG[d.label]
-          const pct = total > 0 ? Math.round((d.value / total) * 100) : 0
-          return (
-            <motion.div 
-              key={d.label} 
-              className="flex items-center gap-2"
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 + i * 0.1 }}
-            >
-              <span 
-                className="w-2.5 h-2.5 rounded-full flex-shrink-0" 
-                style={{ backgroundColor: config?.color }} 
-              />
-              <span className="text-xs text-text-secondary flex-1 truncate">
-                {d.label} <span className="text-text-tertiary">·</span> {config?.label}
-              </span>
-              <span className="text-xs font-bold text-text-primary tabular-nums">{pct}%</span>
-            </motion.div>
-          )
-        })}
+      {/* Legend Styled Exactly Like Screenshot */}
+      <div className="grid grid-cols-3 gap-2 border-t border-slate-100 pt-4 text-center">
+        {legendItems.map((item, i) => (
+          <div key={i} className="flex flex-col items-center justify-center">
+            <div className="flex items-center gap-1.5 text-xs text-slate-500">
+              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${item.color}`} />
+              <span className="font-semibold text-slate-600">{item.name}</span>
+            </div>
+            <span className="text-xs font-bold text-slate-400 mt-1 tabular-nums">
+              {item.count} sales
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   )

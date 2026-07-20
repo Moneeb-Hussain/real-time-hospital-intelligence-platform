@@ -1,85 +1,74 @@
 'use client'
 
 import React from 'react'
-import Link from 'next/link'
-import { AlertTriangle, Info, CheckCircle2, X } from 'lucide-react'
-import { alertSeverityClasses, timeAgo, formatAlertType, cn } from '@/lib/utils'
-import { SkeletonCard, EmptyState } from '@/components/shared'
+import { Bell } from 'lucide-react'
+import { timeAgo, formatAlertType } from '@/lib/utils'
+import { SkeletonCard } from '@/components/shared'
 import type { Alert } from '@/types'
 
-export function AlertsPanel({ alerts, onAcknowledge, loading }: { alerts: Alert[]; onAcknowledge: (id: string) => void; loading?: boolean }) {
+// Mock doctors/staff names matching the screenshot initials for authenticity
+const MOCK_SENDERS = [
+  { name: 'Dr. Scott Elliott', color: 'bg-indigo-100 text-indigo-700' },
+  { name: 'ER Team A', color: 'bg-emerald-100 text-emerald-700' },
+  { name: 'Dr. Frank Martin', color: 'bg-blue-100 text-blue-700' },
+  { name: 'Facility Admin', color: 'bg-amber-100 text-amber-700' }
+]
+
+export function AlertsPanel({ alerts, loading }: { alerts: Alert[]; onAcknowledge?: (id: string) => void; loading?: boolean }) {
   if (loading) {
     return (
-      <div className="card h-full flex flex-col">
-        <div className="p-4 border-b border-border"><SkeletonCard /></div>
-        <div className="p-4 space-y-3"><SkeletonCard /><SkeletonCard /></div>
+      <div className="card h-[380px] p-5 space-y-4">
+        <SkeletonCard />
+        <SkeletonCard />
       </div>
     )
   }
 
   const activeAlerts = alerts.filter(a => a.active)
-  const criticalCount = activeAlerts.filter(a => a.severity === 'critical').length
 
   return (
-    <div className="card h-full flex flex-col">
-      <div className="flex justify-between items-center p-5 pb-0">
-        <div className="flex items-center gap-2">
-          <h3 className="text-lg font-bold text-text-primary">System Alerts</h3>
-          {criticalCount > 0 && <AlertTriangle className="w-5 h-5 text-critical animate-pulse" />}
-        </div>
-        {criticalCount > 0 ? (
-          <span className="text-xs rounded-chip bg-critical-bg text-critical px-2 py-0.5 font-bold tabular-nums border border-critical-border">
-            {criticalCount} Critical
-          </span>
-        ) : activeAlerts.length === 0 ? (
-          <span className="text-xs rounded-chip bg-success-bg text-success px-2 py-0.5 font-bold border border-success/30 flex items-center gap-1">
-            <CheckCircle2 className="w-3 h-3" /> All Clear
-          </span>
-        ) : null}
+    <div className="card h-[380px] flex flex-col p-6 bg-white justify-between">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-base font-bold text-slate-800">Notifications</h3>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto space-y-4 pr-1">
         {activeAlerts.length === 0 ? (
-          <div className="h-full flex items-center justify-center min-h-[200px]">
-             <EmptyState icon={<CheckCircle2 className="w-12 h-12 text-success" />} title="All systems normal" description="No active alerts at this time." />
+          <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+            <Bell className="w-8 h-8 opacity-40" />
+            <span className="text-xs font-semibold">No active notifications</span>
           </div>
         ) : (
-          activeAlerts.slice(0, 5).map(alert => {
-            const cls = alertSeverityClasses(alert.severity)
-            const Icon = alert.severity === 'info' ? Info : AlertTriangle
+          activeAlerts.slice(0, 4).map((alert, idx) => {
+            const sender = MOCK_SENDERS[idx % MOCK_SENDERS.length]
+            const initials = sender.name.split(' ').map(n => n.charAt(0)).filter(c => c !== 'D' && c !== 'r' && c !== '.').join('').slice(0, 2) || 'OP'
 
             return (
-              <div key={alert.id} className={cn('relative flex gap-3 p-3 rounded-button border shadow-sm', cls.bg, cls.border)}>
-                <div className={cn('absolute left-0 top-0 bottom-0 w-1 rounded-l-button', alert.severity === 'critical' ? 'bg-critical' : alert.severity === 'warning' ? 'bg-warning' : 'bg-info')} />
-                
-                <Icon className={cn('w-4 h-4 flex-shrink-0 mt-0.5', cls.icon)} />
-                
-                <div className="flex-1 pr-6">
-                  <div className={cn('font-semibold text-sm', cls.text)}>{formatAlertType(alert.type)}</div>
-                  <p className="text-xs text-text-secondary mt-1 leading-relaxed line-clamp-2">{alert.message}</p>
-                  <div className="text-[10px] text-text-tertiary mt-2 uppercase tracking-wider font-medium">{timeAgo(alert.createdAt)}</div>
+              <div key={alert.id} className="flex items-start justify-between gap-3">
+                {/* Left: Initial Avatar */}
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${sender.color} flex-shrink-0`}>
+                  {initials}
                 </div>
 
-                <button
-                  onClick={() => onAcknowledge(alert.id)}
-                  className="absolute top-2 right-2 p-1 text-text-tertiary hover:text-critical transition-colors rounded-full hover:bg-black/5"
-                  title="Acknowledge"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                {/* Center: Details */}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-slate-800 leading-tight">
+                    {sender.name}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 truncate leading-snug">
+                    {alert.message}
+                  </div>
+                </div>
+
+                {/* Right: Timestamp */}
+                <div className="text-[10px] text-slate-400 font-semibold whitespace-nowrap flex-shrink-0 pt-0.5">
+                  {timeAgo(alert.createdAt)}
+                </div>
               </div>
             )
           })
         )}
       </div>
-
-      {activeAlerts.length > 5 && (
-        <div className="p-3 border-t border-border text-center bg-bg-page/30">
-          <button className="text-xs font-medium text-brand hover:underline transition-colors">
-            View all {activeAlerts.length} alerts &rarr;
-          </button>
-        </div>
-      )}
     </div>
   )
 }

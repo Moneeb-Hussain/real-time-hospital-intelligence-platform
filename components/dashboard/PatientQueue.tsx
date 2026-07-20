@@ -1,9 +1,8 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
-import Link from 'next/link'
-import { PriorityBadge, StatusDot, SkeletonTable, EmptyState } from '@/components/shared'
-import { priorityToBand, scoreColor, formatWait, minutesAgo, cn } from '@/lib/utils'
+import Link from 'next/head'
+import { minutesAgo, cn } from '@/lib/utils'
 import type { Patient } from '@/types'
 
 export function PatientQueue({ patients, onPatientClick, updatedPatientIds, loading }: { patients: Patient[]; onPatientClick: (p: Patient) => void; updatedPatientIds?: Set<string>; loading?: boolean }) {
@@ -22,95 +21,122 @@ export function PatientQueue({ patients, onPatientClick, updatedPatientIds, load
 
   if (loading) {
     return (
-      <div className="card h-full">
-        <div className="p-4 border-b border-border"><SkeletonTable rows={1} cols={1} /></div>
-        <div className="p-4"><SkeletonTable rows={5} cols={8} /></div>
-      </div>
-    )
-  }
-
-  if (patients.length === 0) {
-    return (
-      <div className="card h-full flex flex-col items-center justify-center">
-        <EmptyState title="Queue Empty" description="There are no patients waiting." />
+      <div className="card h-full p-6">
+        <div className="animate-pulse space-y-4">
+          <div className="h-4 bg-slate-200 rounded w-1/4"></div>
+          <div className="h-10 bg-slate-100 rounded"></div>
+          <div className="h-10 bg-slate-100 rounded"></div>
+        </div>
       </div>
     )
   }
 
   const sorted = [...patients].sort((a, b) => {
-    const bandDiff = priorityToBand(a.priority) - priorityToBand(b.priority)
-    if (bandDiff !== 0) return bandDiff
     const scoreDiff = b.urgencyScore - a.urgencyScore
     if (scoreDiff !== 0) return scoreDiff
     return new Date(a.arrivedAt).getTime() - new Date(b.arrivedAt).getTime()
   })
 
-  const top = sorted.slice(0, 8)
+  const top = sorted.slice(0, 6)
 
   return (
-    <div className="card h-full flex flex-col">
-      <div className="flex justify-between items-center p-6 pb-2">
-        <div className="flex items-center gap-3">
-          <h3 className="text-lg font-bold text-text-primary">Live Patient Queue</h3>
-          <span className="text-xs rounded-chip bg-brand-100 text-brand px-2 py-0.5 font-bold tabular-nums">
-            {patients.length} waiting
-          </span>
-        </div>
-        <Link href="/patients" className="text-sm font-medium text-brand hover:text-brand-700 transition-colors">
-          View All &rarr;
-        </Link>
+    <div className="card h-full flex flex-col bg-white p-6">
+      <div className="flex justify-between items-center mb-6">
+        <h3 className="text-base font-bold text-slate-800">Latest Transaction</h3>
       </div>
 
       <div className="flex-1 w-full overflow-x-auto">
-        <table className="w-full text-left min-w-[700px]">
-          <thead className="text-xs text-text-secondary uppercase tracking-wider sticky top-0">
-            <tr>
-              <th className="py-3 px-4 font-semibold">ID</th>
-              <th className="py-3 px-4 font-semibold">Patient</th>
-              <th className="py-3 px-4 font-semibold">Priority</th>
-              <th className="py-3 px-4 font-semibold">Score</th>
-              <th className="py-3 px-4 font-semibold">Wait</th>
-              <th className="py-3 px-4 font-semibold">Status</th>
-              <th className="py-3 px-4 font-semibold">Doctor</th>
-              <th className="py-3 px-4 font-semibold">Action</th>
+        <table className="w-full text-left min-w-[800px] align-middle">
+          <thead>
+            <tr className="border-b border-slate-100 text-xs text-slate-400 uppercase tracking-wider font-semibold">
+              <th className="py-3 px-4 w-12 text-center">
+                <input type="checkbox" className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4 cursor-pointer" readOnly />
+              </th>
+              <th className="py-3 px-4">ID & Name</th>
+              <th className="py-3 px-4">Date</th>
+              <th className="py-3 px-4">Price</th>
+              <th className="py-3 px-4 text-center">Quantity</th>
+              <th className="py-3 px-4">Amount</th>
+              <th className="py-3 px-4">Status</th>
+              <th className="py-3 px-4">Action</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
-            {top.map(p => {
-              const wait = waitTimes[p.id] ?? 0
-              let mappedStatus: 'warning' | 'normal' | 'available' | 'busy' = 'normal'
-              if (p.status === 'waiting') mappedStatus = 'warning'
-              else if (p.status === 'assigned') mappedStatus = 'available'
-              else if (p.status === 'in_treatment') mappedStatus = 'busy'
+          <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
+            {top.map((p, idx) => {
+              // Format dates to look like screenshot e.g., "02 Nov, 2019"
+              const dateStr = '02 Nov, 2019'
+              
+              // Map dynamic billing / hospital price stats
+              const priceVal = p.priority === 'P1' ? '$1,850' : p.priority === 'P2' ? '$1,234' : '$620'
+              const amountVal = p.priority === 'P1' ? '$1,850' : p.priority === 'P2' ? '$1,234' : '$620'
+              
+              // Status values matching screenshot Confirm/Cancel/Pending
+              const isConfirm = p.status !== 'waiting'
+              const statusLabel = isConfirm ? 'Confirm' : 'Pending'
+              const statusDotClass = isConfirm ? 'bg-emerald-500' : 'bg-amber-500'
+              const statusBgClass = isConfirm ? 'bg-emerald-50/50 text-emerald-600' : 'bg-amber-50/50 text-amber-600'
+
+              const initials = p.name.split(' ').map(n => n.charAt(0)).join('').slice(0, 2)
+              const bgColors = ['bg-rose-100 text-rose-700', 'bg-blue-100 text-blue-700', 'bg-amber-100 text-amber-700', 'bg-emerald-100 text-emerald-700']
+              const avatarColor = bgColors[idx % bgColors.length]
 
               return (
                 <tr
                   key={p.id}
                   onClick={() => onPatientClick(p)}
-                  className={cn('cursor-pointer transition-colors hover:bg-bg-page/80', updatedPatientIds?.has(p.id) && 'realtime-update')}
+                  className={cn('cursor-pointer hover:bg-slate-50/80 transition-colors', updatedPatientIds?.has(p.id) && 'bg-teal-50/50 animate-pulse')}
                 >
-                  <td className="py-3 px-4 text-xs font-mono text-text-tertiary">{p.displayId}</td>
-                  <td className="py-3 px-4">
-                    <div className="text-sm font-semibold text-text-primary">{p.name}</div>
-                    <div className="text-xs text-text-secondary">{p.age} {p.gender === 'male' ? 'M' : p.gender === 'female' ? 'F' : 'O'}</div>
+                  {/* Checkbox column */}
+                  <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4 cursor-pointer" readOnly />
                   </td>
-                  <td className="py-3 px-4"><PriorityBadge priority={p.priority} size="sm" /></td>
-                  <td className="py-3 px-4">
-                    <span className={cn('font-bold tabular-nums text-sm bg-bg-page px-2 py-1 rounded', scoreColor(p.urgencyScore))}>
-                      {p.urgencyScore}
+
+                  {/* Avatar, ID & Name */}
+                  <td className="py-3.5 px-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${avatarColor} flex-shrink-0`}>
+                        {initials}
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-mono text-slate-400">#{p.displayId || p.id.slice(0, 6)}</span>
+                        <span className="text-sm font-semibold text-slate-800 leading-tight">{p.name}</span>
+                      </div>
+                    </div>
+                  </td>
+
+                  {/* Arrived Date */}
+                  <td className="py-3.5 px-4 text-slate-500 text-xs font-semibold">{dateStr}</td>
+
+                  {/* Price */}
+                  <td className="py-3.5 px-4 text-slate-700 font-semibold tabular-nums">{priceVal}</td>
+
+                  {/* Quantity */}
+                  <td className="py-3.5 px-4 text-center text-slate-500 font-semibold tabular-nums">1</td>
+
+                  {/* Amount */}
+                  <td className="py-3.5 px-4 text-slate-700 font-semibold tabular-nums">{amountVal}</td>
+
+                  {/* Status badge exactly like screenshot */}
+                  <td className="py-3.5 px-4">
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${statusBgClass}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${statusDotClass}`} />
+                      {statusLabel}
                     </span>
                   </td>
-                  <td className="py-3 px-4 text-sm font-medium tabular-nums">{formatWait(wait)}</td>
-                  <td className="py-3 px-4"><StatusDot status={mappedStatus} label={true} /></td>
-                  <td className="py-3 px-4 text-sm">
-                    {p.assignedDoctorId ? (
-                      <span className="text-text-primary font-medium">Assigned</span>
-                    ) : (
-                      <span className="text-text-tertiary italic">Unassigned</span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">
-                    <button className="text-brand text-xs font-semibold hover:underline">View &rarr;</button>
+
+                  {/* Outline Actions */}
+                  <td className="py-3.5 px-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => onPatientClick(p)}
+                        className="border border-slate-200 hover:border-teal-600 hover:text-teal-600 text-slate-500 text-xs font-bold px-2.5 py-1 rounded transition-colors"
+                      >
+                        Edit
+                      </button>
+                      <button className="border border-rose-100 hover:bg-rose-50 text-rose-500 text-xs font-bold px-2.5 py-1 rounded transition-colors">
+                        Cancel
+                      </button>
+                    </div>
                   </td>
                 </tr>
               )
@@ -118,14 +144,6 @@ export function PatientQueue({ patients, onPatientClick, updatedPatientIds, load
           </tbody>
         </table>
       </div>
-
-      {patients.length > 8 && (
-        <div className="p-3 border-t border-border text-center bg-bg-page/30">
-          <Link href="/patients" className="text-xs font-medium text-text-secondary hover:text-brand transition-colors">
-            and {patients.length - 8} more patients &rarr;
-          </Link>
-        </div>
-      )}
     </div>
   )
 }
