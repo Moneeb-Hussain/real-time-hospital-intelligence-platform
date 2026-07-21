@@ -25,30 +25,6 @@
       }
     },
     {
-      "source": "/patients",
-      "destination": {
-        "service": "backend"
-      }
-    },
-    {
-      "source": "/patients/(.*)",
-      "destination": {
-        "service": "backend"
-      }
-    },
-    {
-      "source": "/resources",
-      "destination": {
-        "service": "backend"
-      }
-    },
-    {
-      "source": "/resources/(.*)",
-      "destination": {
-        "service": "backend"
-      }
-    },
-    {
       "source": "/backend/(.*)",
       "destination": {
         "service": "backend"

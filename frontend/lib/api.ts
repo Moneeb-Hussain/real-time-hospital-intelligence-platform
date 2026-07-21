@@ -27,7 +27,7 @@ export function getHealthScore(): Promise<{ score: number; snapshotTime: string 
 }
 
 export function getPatientQueue(): Promise<{ items: Patient[]; total: number }> {
-  return fetchApi<any>('/dashboard').then(res => ({ items: res.waitingPatients || [], total: res.totalWaiting || 0 }))
+  return fetchApi<any>('/api/dashboard').then(res => ({ items: res.waitingPatients || [], total: res.totalWaiting || 0 }))
 }
 
 export function getPatientById(id: string): Promise<{ patient: Patient; recommendation: Recommendation | null; activity: ActivityLog[] }> {

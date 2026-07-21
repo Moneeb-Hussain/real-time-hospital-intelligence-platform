@@ -6,6 +6,7 @@ from typing import Optional
 from app.database.supabase import supabase
 from app.routes.patients import router
 from app.routes.ai import router as ai_router
+from app.routes.demo_api import router as demo_router
 
 app = FastAPI()
 
@@ -17,6 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(demo_router)
 app.include_router(router)
 app.include_router(ai_router)
 
@@ -26,14 +28,8 @@ def home():
     return {"message": "Hospital Backend is Running"}
 
 
-@app.get("/api/health")
-def api_health():
-    """Does not touch Supabase — use this to confirm the Vercel function boots."""
-    return {"success": True, "data": {"status": "ok"}}
-
-
 # ----------------------------------------------------
-# 1. PYDANTIC SCHEMAS
+# RESOURCE ENDPOINTS (Supabase-backed)
 # ----------------------------------------------------
 class ResourceSchema(BaseModel):
     resource_type: str
@@ -49,9 +45,6 @@ class AIRecommendationSchema(BaseModel):
     recommended_unit: str
 
 
-# ----------------------------------------------------
-# 2. RESOURCE ENDPOINTS
-# ----------------------------------------------------
 @app.post("/resources")
 def create_resource(resource: ResourceSchema):
     try:
@@ -74,20 +67,6 @@ def get_all_resources():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Temporary stubs so dashboard calls do not hard-crash while full APIs are built
-@app.get("/api/alerts")
-def get_alerts():
-    return {"success": True, "data": []}
-
-
-@app.get("/api/recommendations")
-def get_recommendations():
-    return {"success": True, "data": []}
-
-
-# ----------------------------------------------------
-# 3. AI RECOMMENDATION VALIDATOR ENDPOINT
-# ----------------------------------------------------
 @app.post("/backend/validate-recommendation")
 def validate_ai_recommendation(rec: AIRecommendationSchema):
     try:
