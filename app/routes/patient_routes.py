@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 from typing import Optional, List
 from datetime import datetime
 import uuid
+import random
 from app.database.supabase import supabase
 from app.services.priority_engine import calculate_urgency
 from app.services.resource_checker import check_available_resources
@@ -10,9 +11,9 @@ from app.services.gpt_service import generate_recommendation
 router = APIRouter()
 
 # ============================================================
-# API 1: POST /api/patients - Add a single patient ✅ ALREADY BUILT
+# API 1: POST /api/patient - Add a single patient
 # ============================================================
-@router.post("/patient")
+@router.post("/patient", status_code=status.HTTP_201_CREATED)
 async def process_patient(patient_data: dict):
     """Add a new patient with AI triage"""
     try:
@@ -57,9 +58,9 @@ async def process_patient(patient_data: dict):
 
 
 # ============================================================
-# API 2: POST /api/patients/import - Bulk import patients 🔴 NEW
+# API 2: POST /api/patients/import - Bulk import patients
 # ============================================================
-@router.post("/patients/import")
+@router.post("/patients/import", status_code=status.HTTP_201_CREATED)
 async def import_patients(patients_list: List[dict]):
     """Import multiple patients at once"""
     try:
@@ -107,7 +108,7 @@ async def import_patients(patients_list: List[dict]):
 
 
 # ============================================================
-# API 3: POST /api/patients/{id}/evaluate - Rule engine (no GPT) 🔴 NEW
+# API 3: POST /api/patients/{id}/evaluate - Rule engine (no GPT)
 # ============================================================
 @router.post("/patients/{patient_id}/evaluate")
 async def evaluate_patient(patient_id: str):
@@ -144,7 +145,7 @@ async def evaluate_patient(patient_id: str):
 
 
 # ============================================================
-# API 4: POST /api/recommendations/generate - Build payload from DB 🔴 NEW
+# API 4: POST /api/recommendations/generate - AI Recommendation
 # ============================================================
 @router.post("/recommendations/generate")
 async def generate_recommendation_api(patient_id: str = Query(...)):
@@ -158,20 +159,98 @@ async def generate_recommendation_api(patient_id: str = Query(...)):
         
         patient = patient_response.data[0]
         
-        # Get resources
+        # Get available resources
         resources = await check_available_resources()
         
         # Calculate priority
         priority = {
             'score': patient.get('urgency_score', 0),
             'level': patient.get('priority_level', 'P4'),
-            'reasons': ['Patient evaluation']
+            'reasons': ['Patient requires evaluation']
         }
         
-        # Generate AI recommendation
-        recommendation = await generate_recommendation(patient, priority, resources)
+        # Get available ICU beds
+        icu_beds_response = supabase.table('resources').select('*').eq('resource_type', 'bed').eq('sub_type', 'ICU').eq('is_available', True).execute()
+        icu_beds = icu_beds_response.data if icu_beds_response.data else []
         
-        # Save recommendation to audit log
+        # Get available ER beds
+        er_beds_response = supabase.table('resources').select('*').eq('resource_type', 'bed').eq('sub_type', 'emergency').eq('is_available', True).execute()
+        er_beds = er_beds_response.data if er_beds_response.data else []
+        
+        # Get available doctors (sorted by workload)
+        doctors_response = supabase.table('resources').select('*').eq('resource_type', 'doctor').eq('is_available', True).order('workload').execute()
+        doctors = doctors_response.data if doctors_response.data else []
+        
+        # Get available equipment
+        equipment_response = supabase.table('resources').select('*').eq('resource_type', 'equipment').eq('is_available', True).execute()
+        equipment = equipment_response.data if equipment_response.data else []
+        
+        # Decide based on priority
+        is_critical = priority['level'] in ['P1', 'P2']
+        recommended_unit = 'ICU' if is_critical and icu_beds else 'Emergency'
+        
+        # Choose bed
+        recommended_bed = None
+        if recommended_unit == 'ICU' and icu_beds:
+            recommended_bed = icu_beds[0]
+        elif er_beds:
+            recommended_bed = er_beds[0]
+        
+        # Choose doctor (least workload)
+        recommended_doctor = doctors[0] if doctors else None
+        
+        # Choose equipment
+        recommended_equipment = equipment[:2] if equipment else []
+        
+        # Build reasoning
+        reasoning = []
+        if patient.get('oxygen_level', 100) < 90:
+            reasoning.append(f"Critical oxygen level ({patient.get('oxygen_level')}%)")
+        if patient.get('blood_pressure_systolic', 120) < 90:
+            reasoning.append(f"Critical low blood pressure ({patient.get('blood_pressure_systolic')}/{patient.get('blood_pressure_diastolic')})")
+        if not patient.get('is_conscious', True):
+            reasoning.append("Patient is unconscious")
+        if 'chest' in patient.get('main_problem', '').lower():
+            reasoning.append("Chest pain reported")
+        if patient.get('heart_rate', 80) > 120:
+            reasoning.append(f"Tachycardia ({patient.get('heart_rate')} bpm)")
+        elif patient.get('heart_rate', 80) < 50:
+            reasoning.append(f"Bradycardia ({patient.get('heart_rate')} bpm)")
+        if recommended_unit == 'ICU':
+            reasoning.append(f"{len(icu_beds)} ICU bed(s) available")
+        else:
+            reasoning.append(f"{len(er_beds)} ER bed(s) available")
+        if recommended_doctor:
+            reasoning.append(f"Dr. {recommended_doctor.get('name', 'Available')} available")
+        
+        # Build alternative plan
+        alternative_plan = None
+        if recommended_unit == 'ICU' and not icu_beds:
+            alternative_plan = "No ICU beds available. Stabilize in Emergency Room and place first in ICU transfer queue."
+        elif not recommended_doctor:
+            alternative_plan = "No doctors currently available. Alert nursing supervisor for reassignment."
+        elif not recommended_equipment:
+            alternative_plan = "Limited equipment available. Prioritize critical monitoring."
+        else:
+            alternative_plan = "Resources available. Proceed with recommended plan."
+        
+        # Build structured recommendation
+        recommendation = {
+            "recommendedUnit": recommended_unit,
+            "recommendedBedId": recommended_bed.get('id') if recommended_bed else None,
+            "recommendedBedName": recommended_bed.get('name') if recommended_bed else None,
+            "recommendedDoctorId": recommended_doctor.get('id') if recommended_doctor else None,
+            "recommendedDoctorName": recommended_doctor.get('name') if recommended_doctor else None,
+            "recommendedEquipment": [e.get('name') for e in recommended_equipment],
+            "recommendedEquipmentIds": [e.get('id') for e in recommended_equipment],
+            "reasoningSummary": reasoning,
+            "confidence": 0.92 if is_critical and recommended_bed else 0.80,
+            "alternativePlan": alternative_plan,
+            "priorityLevel": priority['level'],
+            "urgencyScore": priority['score']
+        }
+        
+        # Save to audit log
         supabase.table('audit_logs').insert({
             'patient_id': patient_id,
             'action': 'recommendation_generated',
@@ -183,17 +262,23 @@ async def generate_recommendation_api(patient_id: str = Query(...)):
             "success": True,
             "patient_id": patient_id,
             "recommendation": recommendation,
-            "resources_available": resources
+            "resources_available": {
+                "icu_beds": len(icu_beds),
+                "er_beds": len(er_beds),
+                "available_doctors": len(doctors),
+                "available_equipment": len(equipment)
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
-# API 5: POST /api/recommendations/{id}/validate - Validate AI recommendation 🔴 NEW
+# API 5: POST /api/recommendations/{id}/validate - Validate AI recommendation
 # ============================================================
 @router.post("/recommendations/{recommendation_id}/validate")
 async def validate_recommendation(recommendation_id: str):
@@ -208,43 +293,39 @@ async def validate_recommendation(recommendation_id: str):
         audit = response.data[0]
         recommendation = audit.get('recommendation', {})
         
-        # Validate bed availability
-        assigned_area = recommendation.get('assigned_area', '')
-        bed_type = 'ICU' if assigned_area == 'ICU' else 'emergency'
+        errors = []
+        warnings = []
         
-        beds_response = supabase.table('resources').select('*').eq('resource_type', 'bed').eq('sub_type', bed_type).eq('is_available', True).execute()
-        bed_available = len(beds_response.data) > 0 if beds_response.data else False
+        # Validate bed availability
+        recommended_bed_id = recommendation.get('recommendedBedId')
+        if recommended_bed_id:
+            bed_response = supabase.table('resources').select('*').eq('id', recommended_bed_id).eq('is_available', True).execute()
+            if not bed_response.data:
+                errors.append(f"Recommended bed {recommended_bed_id} is not available")
+        else:
+            warnings.append("No bed recommended")
         
         # Validate doctor availability
-        doctors_response = supabase.table('resources').select('*').eq('resource_type', 'doctor').eq('is_available', True).execute()
-        doctor_available = len(doctors_response.data) > 0 if doctors_response.data else False
+        recommended_doctor_id = recommendation.get('recommendedDoctorId')
+        if recommended_doctor_id:
+            doctor_response = supabase.table('resources').select('*').eq('id', recommended_doctor_id).eq('is_available', True).execute()
+            if not doctor_response.data:
+                errors.append(f"Recommended doctor {recommended_doctor_id} is not available")
+        else:
+            warnings.append("No doctor recommended")
         
         # Validate equipment
-        equipment_needed = recommendation.get('required_resources', [])
-        equipment_available = []
-        for item in equipment_needed:
-            equip_response = supabase.table('resources').select('*').eq('resource_type', 'equipment').eq('name', item).eq('is_available', True).execute()
-            if equip_response.data and len(equip_response.data) > 0:
-                equipment_available.append(item)
-        
-        validation_result = {
-            "valid": bed_available and doctor_available,
-            "bed_available": bed_available,
-            "doctor_available": doctor_available,
-            "equipment_available": equipment_available,
-            "missing_equipment": [item for item in equipment_needed if item not in equipment_available]
-        }
-        
-        # Update audit log
-        supabase.table('audit_logs').update({
-            'status': 'validated',
-            'recommendation': {**recommendation, 'validation': validation_result}
-        }).eq('id', recommendation_id).execute()
+        recommended_equipment_ids = recommendation.get('recommendedEquipmentIds', [])
+        for equip_id in recommended_equipment_ids:
+            equip_response = supabase.table('resources').select('*').eq('id', equip_id).eq('is_available', True).execute()
+            if not equip_response.data:
+                errors.append(f"Equipment {equip_id} is not available")
         
         return {
-            "success": True,
-            "recommendation_id": recommendation_id,
-            "validation": validation_result
+            "isValid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "status": "approved" if len(errors) == 0 else "flagged"
         }
         
     except HTTPException:
@@ -254,7 +335,7 @@ async def validate_recommendation(recommendation_id: str):
 
 
 # ============================================================
-# API 6: PATCH /api/recommendations/{id}/decision - Approve/reject/override 🔴 NEW
+# API 6: PATCH /api/recommendations/{id}/decision - Approve/reject/override
 # ============================================================
 @router.patch("/recommendations/{recommendation_id}/decision")
 async def make_decision(recommendation_id: str, decision_data: dict):
@@ -289,29 +370,36 @@ async def make_decision(recommendation_id: str, decision_data: dict):
         # If approved, allocate resources
         if decision == 'approved':
             # Allocate bed
-            assigned_area = recommendation.get('assigned_area', '')
-            bed_type = 'ICU' if assigned_area == 'ICU' else 'emergency'
-            
-            bed = supabase.table('resources').select('*').eq('resource_type', 'bed').eq('sub_type', bed_type).eq('is_available', True).limit(1).execute()
-            
-            if bed.data:
+            recommended_bed_id = recommendation.get('recommendedBedId')
+            if recommended_bed_id:
                 supabase.table('resources').update({
                     'is_available': False,
                     'assigned_to': patient_id
-                }).eq('id', bed.data[0]['id']).execute()
+                }).eq('id', recommended_bed_id).execute()
             
             # Allocate doctor
-            doctor = supabase.table('resources').select('*').eq('resource_type', 'doctor').eq('is_available', True).limit(1).execute()
+            recommended_doctor_id = recommendation.get('recommendedDoctorId')
+            if recommended_doctor_id:
+                doctor = supabase.table('resources').select('*').eq('id', recommended_doctor_id).execute()
+                if doctor.data:
+                    supabase.table('resources').update({
+                        'workload': doctor.data[0].get('workload', 0) + 1
+                    }).eq('id', recommended_doctor_id).execute()
             
-            if doctor.data:
+            # Allocate equipment
+            recommended_equipment_ids = recommendation.get('recommendedEquipmentIds', [])
+            for equip_id in recommended_equipment_ids:
                 supabase.table('resources').update({
-                    'workload': doctor.data[0]['workload'] + 1
-                }).eq('id', doctor.data[0]['id']).execute()
+                    'is_available': False,
+                    'assigned_to': patient_id
+                }).eq('id', equip_id).execute()
             
             # Update patient status
             supabase.table('patients').update({
                 'status': 'assigned',
-                'hospital_area': assigned_area
+                'hospital_area': recommendation.get('recommendedUnit', 'Emergency'),
+                'assigned_bed_id': recommended_bed_id,
+                'assigned_doctor_id': recommended_doctor_id
             }).eq('id', patient_id).execute()
         
         # If rejected, update patient status
@@ -334,7 +422,7 @@ async def make_decision(recommendation_id: str, decision_data: dict):
 
 
 # ============================================================
-# API 7: GET /api/dashboard - Live summary ✅ ALREADY BUILT
+# API 7: GET /api/dashboard - Live summary
 # ============================================================
 @router.get("/dashboard")
 async def get_dashboard():
@@ -370,7 +458,7 @@ async def get_dashboard():
 
 
 # ============================================================
-# API 8: POST /api/simulations - Run simulations 🔴 NEW
+# API 8: POST /api/simulations - Run simulations
 # ============================================================
 @router.post("/simulations")
 async def run_simulation(simulation_data: dict):
@@ -379,7 +467,6 @@ async def run_simulation(simulation_data: dict):
         num_patients = simulation_data.get('num_patients', 10)
         patients = []
         
-        # Generate random patients
         symptoms_list = [
             ["chest pain", "shortness of breath"],
             ["headache", "dizziness"],
@@ -388,7 +475,6 @@ async def run_simulation(simulation_data: dict):
             ["broken bone", "swelling"]
         ]
         
-        import random
         for i in range(num_patients):
             age = random.randint(18, 85)
             symptoms = random.choice(symptoms_list)
@@ -411,7 +497,6 @@ async def run_simulation(simulation_data: dict):
                 "is_conscious": is_conscious
             }
             
-            # Process patient
             priority = calculate_urgency(patient)
             patient_record = {
                 **patient,
@@ -437,7 +522,7 @@ async def run_simulation(simulation_data: dict):
 
 
 # ============================================================
-# API 9: PATCH /api/resources/{id} - Update resource availability 🔴 NEW
+# API 9: PATCH /api/resources/{id} - Update resource availability
 # ============================================================
 @router.patch("/resources/{resource_id}")
 async def update_resource(resource_id: str, update_data: dict):
@@ -469,7 +554,37 @@ async def update_resource(resource_id: str, update_data: dict):
 
 
 # ============================================================
-# Health Check - ✅ ALREADY BUILT
+# GET /api/patients - Get all patients
+# ============================================================
+@router.get("/patients")
+async def get_all_patients():
+    """Get all patients"""
+    try:
+        response = supabase.table('patients').select('*').execute()
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# GET /api/patients/{id} - Get patient by ID
+# ============================================================
+@router.get("/patients/{patient_id}")
+async def get_patient(patient_id: str):
+    """Get a specific patient by ID"""
+    try:
+        response = supabase.table('patients').select('*').eq('id', patient_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Patient not found")
+        return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Health Check
 # ============================================================
 @router.get("/health")
 async def health_check():
