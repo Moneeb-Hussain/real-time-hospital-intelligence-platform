@@ -16,8 +16,8 @@ export function Header({ activeAlerts = 0 }: { activeAlerts?: number }) {
     return () => clearInterval(id)
   }, [])
 
-  let breadcrumbs = [{ label: 'Command Center' }]
-  if (pathname.startsWith('/dashboard')) breadcrumbs = [{ label: 'Dashboard' }]
+  let breadcrumbs = [{ label: 'AegisOps AI' }]
+  if (pathname.startsWith('/dashboard')) breadcrumbs = [{ label: 'AegisOps AI' }, { label: 'Dashboard' }]
   else if (pathname.startsWith('/intake')) breadcrumbs.push({ label: 'Patient Intake' })
   else if (pathname.startsWith('/recommendation')) breadcrumbs.push({ label: 'AI Recommendation' })
   else if (pathname.startsWith('/resources')) breadcrumbs.push({ label: 'Resources' })

@@ -46,6 +46,36 @@ def _patient_row(patient: PatientCreate) -> dict:
     }
 
 
+class TriagePreviewBody(BaseModel):
+    age: int = 30
+    complaint: str = ""
+    symptoms: List[str] = Field(default_factory=list)
+    vitals: Vitals
+    consciousness: str = "ALERT"
+
+
+@router.post("/patients/preview-triage")
+async def preview_triage(body: TriagePreviewBody):
+    """Score a patient without writing to the database (intake live preview)."""
+    priority = calculate_urgency(
+        {
+            "age": body.age,
+            "complaint": body.complaint,
+            "symptoms": body.symptoms or [],
+            "consciousness": (body.consciousness or "ALERT").upper(),
+            "vitals": body.vitals.model_dump(),
+        }
+    )
+    return {
+        "success": True,
+        "data": {
+            "score": priority["score"],
+            "level": priority["level"],
+            "reasons": priority.get("reasons") or [],
+        },
+    }
+
+
 @router.post("/patients", status_code=status.HTTP_201_CREATED)
 async def create_patient(patient: PatientCreate):
     try:
@@ -122,6 +152,31 @@ async def evaluate_patient(patient_id: str):
             .execute()
         )
 
+        try:
+            supabase.table("audit_logs").insert(
+                [
+                    {
+                        "patient_id": patient_id,
+                        "action": "patient_arrived",
+                        "description": f"{patient.get('name') or patient_id} registered through intake",
+                        "actor": "INTAKE",
+                        "meta": {"priority": priority["level"]},
+                    },
+                    {
+                        "patient_id": patient_id,
+                        "action": "priority_calculated",
+                        "description": f"Assigned {priority['level']} (score {priority['score']})",
+                        "actor": "RULE_ENGINE",
+                        "meta": {
+                            "priority": priority["level"],
+                            "score": priority["score"],
+                        },
+                    },
+                ]
+            ).execute()
+        except Exception:
+            pass
+
         return {
             "success": True,
             "data": {
@@ -183,18 +238,36 @@ async def get_dashboard():
             occupied = sum(1 for b in group if b.get("is_available") is not True)
             return int((occupied / len(group)) * 100)
 
+        doctors_by_id = {
+            str(r.get("id")): (r.get("name") or r.get("resource_name") or str(r.get("id")))
+            for r in resources
+            if r.get("resource_type") == "doctor"
+        }
+
         queue_preview = sorted(
             [
                 {
                     "patientId": str(p.get("id")),
+                    "name": p.get("name"),
+                    "age": p.get("age"),
+                    "gender": p.get("gender"),
+                    "complaint": p.get("complaint"),
+                    "symptoms": p.get("symptoms") or [],
+                    "vitals": p.get("vitals") or {},
+                    "consciousness": p.get("consciousness"),
                     "priority": p.get("priority") or "P4",
                     "urgencyScore": p.get("urgency_score") or 0,
+                    "createdAt": p.get("created_at"),
+                    "status": p.get("status"),
+                    "assignedDoctorId": p.get("assigned_doctor_id"),
+                    "assignedDoctorName": doctors_by_id.get(str(p.get("assigned_doctor_id") or "")),
+                    "assignedBedId": p.get("assigned_bed_id"),
                 }
                 for p in waiting
             ],
             key=lambda item: item["urgencyScore"],
             reverse=True,
-        )[:5]
+        )[:10]
 
         return {
             "success": True,

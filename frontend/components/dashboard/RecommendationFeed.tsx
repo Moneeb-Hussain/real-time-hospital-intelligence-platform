@@ -51,7 +51,12 @@ export function RecommendationFeed({ recommendations, onApprove, onReject, loadi
                 <div className="flex justify-between items-start mb-3">
                   <div>
                     <div className="font-bold text-sm text-text-primary">{rec.patientId}</div>
-                    <div className="text-xs text-text-secondary font-medium mt-0.5">{payload.recommendedUnit}</div>
+                    <div className="text-xs text-text-secondary font-medium mt-0.5">
+                      {payload.recommendedUnit}
+                      {payload.doctor ? (
+                        <span className="text-slate-400"> · {payload.doctor}</span>
+                      ) : null}
+                    </div>
                   </div>
                   {badgeNode}
                 </div>
@@ -61,7 +66,7 @@ export function RecommendationFeed({ recommendations, onApprove, onReject, loadi
                 </div>
 
                 <ul className="space-y-1 mb-4">
-                  {payload.reasons.slice(0, 2).map((reason: string, i: number) => (
+                  {(payload.reasons || []).slice(0, 2).map((reason: string, i: number) => (
                     <li key={i} className="text-xs text-text-secondary flex gap-2 items-start leading-relaxed">
                       <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary mt-1.5 flex-shrink-0" />
                       <span>{reason}</span>

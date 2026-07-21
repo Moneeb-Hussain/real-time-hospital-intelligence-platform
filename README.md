@@ -1,4 +1,4 @@
-🏥 Real-Time Hospital Intelligence Platform
+# AegisOps AI: Real-Time Hospital Operations Command Center
 
 AI-powered decision support for smarter, faster emergency room operations.
 

@@ -22,7 +22,11 @@ from app.services.ai_payload import (
     normalize_vitals,
 )
 from app.services.priority_engine import calculate_urgency
-from app.services.resource_service import build_resources_summary, fetch_resources
+from app.services.resource_service import (
+    build_resources_summary,
+    enrich_summary_queue,
+    fetch_resources,
+)
 
 
 router = APIRouter(tags=["AI operations"])
@@ -239,9 +243,16 @@ def frontend_recommendation(body: dict[str, Any]):
 
 @router.post("/api/ai/simulate")
 def simulate(body: dict[str, Any]):
-    """Run a read-only operational simulation."""
+    """Run a read-only operational simulation against live capacity."""
     rows = _safe_resource_rows()
     snapshot = build_resources_summary(rows)
+    try:
+        patients_res = supabase.table("patients").select(
+            "id,status,priority,priority_level,created_at"
+        ).execute()
+        snapshot = enrich_summary_queue(snapshot, patients_res.data or [])
+    except Exception:
+        pass
     return _ok(generate_simulation_insights(body, snapshot))
 
 
@@ -250,7 +261,41 @@ def briefing(body: dict[str, Any]):
     requested_by = str(body.get("requestedBy") or "Hospital Operator")
     rows = _safe_resource_rows()
     snapshot = build_resources_summary(rows)
-    return _ok(generate_briefing(requested_by, snapshot, _active_alerts()))
+    try:
+        patients_res = supabase.table("patients").select(
+            "id,status,priority,priority_level,created_at,urgency_score"
+        ).execute()
+        snapshot = enrich_summary_queue(snapshot, patients_res.data or [])
+    except Exception:
+        pass
+    pending = _pending_recommendations()
+    pending_count = len(pending)
+    try:
+        recs = supabase.table("recommendations").select("id,status,decision").execute()
+        pending_count = 0
+        for r in recs.data or []:
+            decision = str(r.get("decision") or "").lower()
+            status = str(r.get("status") or "").upper()
+            if decision in {"approved", "rejected", "overridden"}:
+                continue
+            if decision == "pending" or status in {
+                "AWAITING_HUMAN_APPROVAL",
+                "PENDING_VALIDATION",
+                "VALIDATED",
+                "PENDING",
+            }:
+                pending_count += 1
+    except Exception:
+        pending_count = len(pending)
+
+    return _ok(
+        generate_briefing(
+            requested_by,
+            snapshot,
+            _active_alerts(),
+            pending_recommendations=pending_count,
+        )
+    )
 
 
 @router.post("/api/ai/shift-report")

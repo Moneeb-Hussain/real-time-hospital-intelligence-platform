@@ -7,8 +7,8 @@ import { LayoutWrapper } from '@/components/website/LayoutWrapper'
 const inter = Inter({ subsets: ['latin'], display: 'swap' })
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'),
-  title: 'Opus Pulse AI — Hospital Command Center',
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'),
+  title: 'AegisOps AI — Real-Time Hospital Operations Command Center',
   description: 'Real-time AI-powered hospital operations and resource management.',
   icons: {
     icon: [
@@ -18,8 +18,8 @@ export const metadata: Metadata = {
     shortcut: '/favicon.png',
   },
   openGraph: {
-    title: 'Opus Pulse AI — Hospital Command Center',
-    description: 'Real-time AI-powered hospital command operations.',
+    title: 'AegisOps AI — Real-Time Hospital Operations Command Center',
+    description: 'Real-time AI-powered hospital operations command center.',
     images: [{ url: '/logo.png' }],
   },
 }

@@ -11,7 +11,7 @@ from app.routes.demo_api import router as demo_router
 from app.routes.api_v1 import router as api_v1_router
 
 
-app = FastAPI(title="Hospital Intelligence Platform", version="1.0.0")
+app = FastAPI(title="AegisOps AI", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -108,4 +108,5 @@ def validate_ai_recommendation(rec: AIRecommendationSchema):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"\n🚀 Server running on http://localhost:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # reload=True so new routes (e.g. /api/resources/inventory) pick up without a manual restart
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

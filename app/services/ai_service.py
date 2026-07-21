@@ -133,7 +133,7 @@ def generate_alternative_plan(
 def generate_simulation_insights(
     scenario: dict[str, Any], resources: dict[str, Any]
 ) -> dict[str, Any]:
-    """Predict operational impact without changing live data."""
+    """Predict operational impact from live capacity + what-if inputs (read-only)."""
     critical = _as_int(scenario.get("incomingCritical") or scenario.get("incoming_critical"))
     urgent = _as_int(scenario.get("incomingUrgent") or scenario.get("incoming_urgent"))
     needs_icu = _as_int(scenario.get("likelyNeedsICU") or scenario.get("likely_needs_icu"))
@@ -143,71 +143,220 @@ def generate_simulation_insights(
     needs_monitor = _as_int(
         scenario.get("likelyNeedsMonitor") or scenario.get("likely_needs_monitor")
     )
+    window = max(
+        10,
+        _as_int(
+            scenario.get("arrivalWindowMinutes") or scenario.get("arrival_window_minutes"),
+            30,
+        ),
+    )
+
+    beds = resources.get("beds", {}) or {}
     icu_available = _resource_count(resources, "beds", "icu")
+    er_available = _resource_count(resources, "beds", "er")
+    icu_occ = _as_int((beds.get("icu") or {}).get("occupancyPct"))
+    er_occ = _as_int((beds.get("er") or {}).get("occupancyPct"))
     doctor_available = _doctor_count(resources)
     vent_available = _resource_count(resources, "equipment", "ventilator")
     monitor_available = _resource_count(resources, "equipment", "cardiacMonitor")
 
+    queue = resources.get("queue", {}) or {}
+    waiting_now = _as_int(queue.get("waitingTotal")) or (
+        _as_int(queue.get("p1Count"))
+        + _as_int(queue.get("p2Count"))
+        + _as_int(queue.get("p3Count"))
+        + _as_int(queue.get("p4Count"))
+    )
+    p1_now = _as_int(queue.get("p1Count"))
+    avg_wait_now = _as_int(queue.get("avgWaitMinutes"))
+
+    incoming = critical + urgent
     bottlenecks: list[str] = []
     if needs_icu > icu_available:
-        bottlenecks.append(f"ICU bed shortage of {needs_icu - icu_available}")
-    if critical + urgent > doctor_available:
-        bottlenecks.append("Emergency doctor workload will exceed available staffing")
+        bottlenecks.append(
+            f"ICU bed shortage of {needs_icu - icu_available} "
+            f"(need {needs_icu}, only {icu_available} free)"
+        )
+    if incoming > er_available + icu_available:
+        bottlenecks.append(
+            f"Bed capacity shortfall — {incoming} arrivals vs "
+            f"{er_available + icu_available} free ER+ICU beds"
+        )
+    if incoming > doctor_available:
+        bottlenecks.append(
+            f"Doctor shortfall — {incoming} arrivals vs {doctor_available} available doctors"
+        )
     if needs_vent > vent_available:
-        bottlenecks.append(f"Ventilator shortage of {needs_vent - vent_available}")
-    if needs_monitor > monitor_available:
-        bottlenecks.append(f"Cardiac monitor shortage of {needs_monitor - monitor_available}")
-
-    pressure = len(bottlenecks) + (1 if critical >= 3 else 0)
-    risk = "HIGH" if pressure >= 2 else ("MEDIUM" if pressure == 1 else "LOW")
-    wait_change = max(0, critical * 4 + urgent * 2 - doctor_available)
-    actions = []
-    if critical + urgent > doctor_available:
-        actions.append("Call the backup emergency doctor")
-    if needs_icu > icu_available:
-        actions.extend(
-            ["Prepare inter-hospital transfer options", "Prioritize the ICU transfer queue"]
+        bottlenecks.append(
+            f"Ventilator shortage of {needs_vent - vent_available} "
+            f"(need {needs_vent}, {vent_available} free)"
         )
     if needs_monitor > monitor_available:
-        actions.append("Reserve remaining monitors for P1 patients")
+        bottlenecks.append(
+            f"Cardiac monitor shortage of {needs_monitor - monitor_available} "
+            f"(need {needs_monitor}, {monitor_available} free)"
+        )
+    if p1_now + critical >= 3 and icu_available <= 1:
+        bottlenecks.append("Existing P1 queue plus new critical arrivals will overwhelm ICU")
+
+    # Risk from shortages + surge intensity relative to window
+    surge_rate = incoming / (window / 60) if window else incoming  # per hour
+    pressure = len(bottlenecks) + (1 if critical >= 3 else 0) + (1 if surge_rate >= 10 else 0)
+    if pressure >= 4 or (needs_icu > icu_available and critical >= 3):
+        risk = "CRITICAL"
+    elif pressure >= 2:
+        risk = "HIGH"
+    elif pressure == 1:
+        risk = "MEDIUM"
+    else:
+        risk = "LOW"
+
+    wait_delta = max(
+        0,
+        int(round(critical * 5 + urgent * 2.5 + waiting_now * 0.4 - doctor_available * 1.5)),
+    )
+    projected_avg_wait = avg_wait_now + wait_delta
+    doctor_load_pct = min(
+        100,
+        int(round(((incoming + waiting_now) / max(1, doctor_available + waiting_now)) * 100)),
+    )
+    # Rough projected ER occupancy after absorbing arrivals into free beds
+    er_total = _as_int((beds.get("er") or {}).get("total")) or 1
+    er_free_after = max(0, er_available - max(0, incoming - needs_icu))
+    er_occ_after = min(
+        100,
+        int(round(((er_total - er_free_after) / er_total) * 100)) if er_total else er_occ,
+    )
+    icu_total = _as_int((beds.get("icu") or {}).get("total")) or 1
+    icu_free_after = max(0, icu_available - needs_icu)
+    icu_occ_after = min(
+        100,
+        int(round(((icu_total - icu_free_after) / icu_total) * 100)) if icu_total else icu_occ,
+    )
+
+    actions: list[str] = []
+    if incoming > doctor_available:
+        actions.append("Call the backup emergency doctor onto shift")
+    if needs_icu > icu_available:
+        actions.extend(
+            [
+                "Prepare inter-hospital transfer options",
+                "Prioritize the ICU transfer queue for P1 patients",
+            ]
+        )
+    if needs_vent > vent_available:
+        actions.append("Recall ventilators from maintenance if clinically safe")
+    if needs_monitor > monitor_available:
+        actions.append("Reserve remaining monitors for P1 patients only")
+    if er_occ_after >= 85:
+        actions.append("Open overflow ER observation bays")
     if not actions:
-        actions.append("Continue monitoring capacity and staffing")
+        actions.append("Continue monitoring capacity and staffing — surge is absorbable")
+
+    summary = (
+        f"In the next {window} minutes, {critical} P1 and {urgent} P2 arrivals "
+        f"(+{incoming} total) against live capacity "
+        f"({icu_available} ICU free, {er_available} ER free, {doctor_available} doctors, "
+        f"{vent_available} vents, {monitor_available} monitors) "
+        f"creates {risk} operational risk. "
+        f"Queue today: {waiting_now} waiting ({p1_now} P1)."
+    )
 
     return {
-        "summary": (
-            f"Projected arrival of {critical} critical and {urgent} urgent patients "
-            f"creates {risk.lower()} operational risk."
-        ),
+        "summary": summary,
         "riskLevel": risk,
+        "baseline": {
+            "icuAvailable": icu_available,
+            "erAvailable": er_available,
+            "doctorsAvailable": doctor_available,
+            "ventilatorsAvailable": vent_available,
+            "monitorsAvailable": monitor_available,
+            "waitingNow": waiting_now,
+            "p1Waiting": p1_now,
+            "avgWaitMinutes": avg_wait_now,
+            "icuOccupancyPct": icu_occ,
+            "erOccupancyPct": er_occ,
+        },
         "projectedImpact": {
-            "waitTimeChangeMinutes": wait_change,
-            "doctorLoadChangePercentage": min(100, (critical + urgent) * 12),
+            "waitTimeChangeMinutes": wait_delta,
+            "projectedAvgWaitMinutes": projected_avg_wait,
+            "doctorLoadChangePercentage": doctor_load_pct,
+            "icuOccupancyPercentage": icu_occ_after,
+            "emergencyOccupancyPercentage": er_occ_after,
             "additionalIcuBedsRequired": max(0, needs_icu - icu_available),
         },
-        "bottlenecks": bottlenecks,
+        "bottlenecks": bottlenecks or ["No hard capacity bottlenecks detected for this scenario"],
         "recommendedActions": actions,
     }
 
 
 def generate_briefing(
-    requested_by: str, snapshot: dict[str, Any], alerts: list[dict[str, Any]]
+    requested_by: str,
+    snapshot: dict[str, Any],
+    alerts: list[dict[str, Any]],
+    pending_recommendations: int = 0,
 ) -> dict[str, Any]:
-    """Create a concise operational briefing; deterministic so it is always available."""
-    icu = snapshot.get("beds", {}).get("icu", {})
-    queue = snapshot.get("queue", {})
-    highlights = [
-        f"ICU occupancy is {icu.get('occupancyPct', 0)}%",
-        f"{queue.get('p1Count', 0)} P1 patients are waiting",
+    """Build an ops briefing from live snapshot + alerts (no LLM required)."""
+    beds = snapshot.get("beds", {}) or {}
+    icu = beds.get("icu", {}) or {}
+    er = beds.get("er", {}) or {}
+    ward = beds.get("ward", {}) or {}
+    queue = snapshot.get("queue", {}) or {}
+    doctors = snapshot.get("doctors", {}) or {}
+    available_docs = doctors.get("available") or []
+    all_docs = doctors.get("all") or []
+
+    p1 = int(queue.get("p1Count") or 0)
+    waiting_total = int(
+        queue.get("waitingTotal")
+        or (
+            int(queue.get("p1Count") or 0)
+            + int(queue.get("p2Count") or 0)
+            + int(queue.get("p3Count") or 0)
+            + int(queue.get("p4Count") or 0)
+        )
+    )
+    avg_wait = int(queue.get("avgWaitMinutes") or 0)
+    active_alerts = [a for a in alerts if a.get("active", True)]
+
+    highlights: list[str] = [
+        f"ICU occupancy is {icu.get('occupancyPct', 0)}% ({icu.get('available', 0)} of {icu.get('total', 0)} beds free)",
+        f"ER occupancy is {er.get('occupancyPct', 0)}%",
+        f"{p1} P1 patients waiting · {waiting_total} total in queue",
     ]
-    highlights.extend(str(a.get("message")) for a in alerts[:3] if a.get("message"))
+    if avg_wait:
+        highlights.append(f"Average wait is {avg_wait} minutes")
+    if pending_recommendations:
+        highlights.append(f"{pending_recommendations} AI recommendations need approval")
+    if all_docs:
+        highlights.append(f"{len(available_docs)} of {len(all_docs)} doctors available")
+    highlights.extend(str(a.get("message")) for a in active_alerts[:4] if a.get("message"))
+
+    pressure: list[str] = []
+    if int(icu.get("occupancyPct") or 0) >= 85:
+        pressure.append("ICU under pressure")
+    if p1 > 0:
+        pressure.append(f"{p1} critical patient(s) still waiting")
+    if avg_wait >= 30:
+        pressure.append("wait times elevated")
+    if not pressure:
+        pressure.append("operations within normal range")
+
+    briefing = (
+        f"Hospital status briefing for {requested_by}: "
+        f"{icu.get('available', 0)} ICU bed(s) available ({icu.get('occupancyPct', 0)}% occupied), "
+        f"{er.get('available', 0)} ER bed(s) free, "
+        f"Ward at {ward.get('occupancyPct', 0)}%. "
+        f"{waiting_total} patients in queue ({p1} P1), "
+        f"avg wait {avg_wait} min, "
+        f"{len(active_alerts)} active alert(s), "
+        f"{pending_recommendations} pending AI recommendation(s). "
+        f"Overall: {', '.join(pressure)}."
+    )
+
     return {
-        "briefing": (
-            f"Hospital status briefing for {requested_by}: "
-            f"{icu.get('available', 0)} ICU beds available, "
-            f"{queue.get('p1Count', 0)} critical patients waiting, and "
-            f"{len(alerts)} active alerts."
-        ),
-        "highlights": highlights,
+        "briefing": briefing,
+        "highlights": highlights[:8],
     }
 
 

@@ -1,111 +1,83 @@
 'use client'
 
 import React from 'react'
+import { motion } from 'framer-motion'
+import { Skeleton } from '@/components/shared'
+import { cn } from '@/lib/utils'
+import type { DepartmentStatus } from '@/types'
 
-export function DepartmentOccupancy({ departments }: { departments: any }) {
-  // Region stats matching screenshot visual style
-  const regions = [
-    { name: 'Northeast (NY)', count: 142, pct: 62, color: 'bg-teal-500' },
-    { name: 'West Coast (CA)', count: 95, pct: 48, color: 'bg-blue-500' },
-    { name: 'Southern Hub (TX)', count: 104, pct: 54, color: 'bg-indigo-500' }
-  ]
+function statusStyles(status: DepartmentStatus['status']) {
+  switch (status) {
+    case 'critical':
+    case 'full':
+      return { badge: 'bg-orange-100 text-orange-700', bar: 'bg-orange-500', label: 'CRITICAL' }
+    case 'busy':
+      return { badge: 'bg-rose-100 text-rose-600', bar: 'bg-[#F472B6]', label: 'BUSY' }
+    default:
+      return { badge: 'bg-emerald-100 text-emerald-700', bar: 'bg-emerald-500', label: 'NORMAL' }
+  }
+}
+
+export function DepartmentOccupancy({ departments }: { departments: DepartmentStatus[] | null }) {
+  if (!departments) {
+    return (
+      <div className="panel h-full min-h-[340px] p-5 space-y-4">
+        <Skeleton className="h-5 w-1/2" />
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-12 w-full" />
+        ))}
+      </div>
+    )
+  }
+
+  const rows = departments.length ? departments : []
 
   return (
-    <div className="card h-[380px] flex flex-col p-6 bg-white justify-between">
-      <div className="flex justify-between items-center mb-2">
-        <h3 className="text-base font-bold text-slate-800">Revenue by Location</h3>
+    <div className="panel h-full min-h-[340px] flex flex-col p-5 bg-white">
+      <div className="flex justify-between items-center mb-5">
+        <h3 className="text-[13px] font-bold text-slate-800 tracking-tight">Department Occupancy</h3>
       </div>
 
-      <div className="grid grid-cols-12 gap-4 flex-1 items-center">
-        {/* Left: Stylized Map Graphic (Col 7) */}
-        <div className="col-span-7 relative flex items-center justify-center h-full max-h-[190px]">
-          <svg
-            viewBox="0 0 500 330"
-            className="w-full h-full text-slate-200"
-            fill="currentColor"
-          >
-            {/* Highly detailed US geographical regions and clinical zones */}
-            <g id="regions" opacity="0.85">
-              {/* West */}
-              <path
-                d="M30,70 L100,50 L120,130 L160,220 L90,260 L40,200 Z"
-                fill="#F8FAFC"
-                stroke="#E2E8F0"
-                strokeWidth="2"
-              />
-              {/* Midwest / Central */}
-              <path
-                d="M100,50 L260,60 L280,180 L200,240 L160,220 L120,130 Z"
-                fill="#F1F5F9"
-                stroke="#CBD5E1"
-                strokeWidth="2"
-              />
-              {/* South / Texas */}
-              <path
-                d="M160,220 L200,240 L280,180 L320,240 L250,290 L180,290 Z"
-                fill="#E2E8F0"
-                stroke="#CBD5E1"
-                strokeWidth="2"
-              />
-              {/* Northeast & East Coast */}
-              <path
-                d="M260,60 L380,50 L420,100 L440,180 L350,200 L280,180 Z"
-                fill="#F8FAFC"
-                stroke="#E2E8F0"
-                strokeWidth="2"
-              />
-              {/* Florida / Southeast */}
-              <path
-                d="M350,200 L440,180 L420,230 L380,270 L340,250 Z"
-                fill="#F1F5F9"
-                stroke="#E2E8F0"
-                strokeWidth="2"
-              />
-            </g>
-
-            {/* Glowing Referral Hub nodes */}
-            <g id="hubs">
-              {/* CA Hub */}
-              <circle cx="80" cy="140" r="7" fill="#3B82F6" />
-              <circle cx="80" cy="140" r="16" stroke="#3B82F6" strokeWidth="1.5" fill="none" className="animate-ping" opacity="0.3" />
-
-              {/* TX Hub */}
-              <circle cx="220" cy="240" r="6" fill="#6366F1" />
-
-              {/* NY Hub */}
-              <circle cx="360" cy="100" r="7" fill="#0D9488" />
-              <circle cx="360" cy="100" r="18" stroke="#0D9488" strokeWidth="1.5" fill="none" className="animate-ping" opacity="0.3" />
-
-              {/* FL Hub */}
-              <circle cx="390" cy="230" r="5" fill="#3B82F6" />
-            </g>
-
-            {/* Referral flow indicators */}
-            <path d="M80,140 Q220,190 360,100" fill="none" stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.5" />
-          </svg>
-        </div>
-
-        {/* Right: Region Stats Lists (Col 5) */}
-        <div className="col-span-5 flex flex-col gap-3 justify-center">
-          {regions.map((reg) => (
-            <div key={reg.name} className="flex flex-col gap-1">
-              <div className="flex justify-between text-[11px] font-bold text-slate-600">
-                <span className="truncate">{reg.name}</span>
-                <span className="tabular-nums">{reg.pct}%</span>
+      <div className="flex-1 flex flex-col justify-between gap-5">
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-400 font-semibold py-8 text-center">No department data</p>
+        ) : (
+          rows.map((d, i) => {
+            const styles = statusStyles(d.status)
+            return (
+              <div key={d.unitCode}>
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-800">{d.unitCode}</div>
+                    <div className="text-[10px] text-slate-400 truncate">{d.unitName}</div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-[11px] tabular-nums text-slate-600 font-semibold">
+                      {d.occupiedBeds}/{d.totalBeds}
+                      <span className="text-slate-400 font-medium ml-1">({d.occupancyPct}%)</span>
+                    </span>
+                    <span
+                      className={cn(
+                        'text-[9px] font-bold px-2 py-0.5 rounded-md tracking-wide',
+                        styles.badge
+                      )}
+                    >
+                      {styles.label}
+                    </span>
+                  </div>
+                </div>
+                <div className="w-full bg-slate-100/90 h-2.5 rounded-full overflow-hidden">
+                  <motion.div
+                    className={cn('h-full rounded-full', styles.bar)}
+                    initial={{ width: '0%' }}
+                    animate={{ width: `${Math.min(100, Math.max(0, d.occupancyPct))}%` }}
+                    transition={{ duration: 0.65, delay: i * 0.05 }}
+                  />
+                </div>
               </div>
-              <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                <div className={`h-full rounded-full ${reg.color}`} style={{ width: `${reg.pct}%` }} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Centered green action button */}
-      <div className="flex justify-center border-t border-slate-100 pt-3 mt-1">
-        <button className="bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold px-6 py-2 rounded-md transition-colors shadow-sm">
-          View More
-        </button>
+            )
+          })
+        )}
       </div>
     </div>
   )

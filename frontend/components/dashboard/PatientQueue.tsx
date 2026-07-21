@@ -2,30 +2,65 @@
 
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { minutesAgo, cn } from '@/lib/utils'
-import type { Patient } from '@/types'
+import { formatWait, minutesAgo, cn, priorityClasses } from '@/lib/utils'
+import type { Doctor, Patient } from '@/types'
 
-export function PatientQueue({ patients, onPatientClick, updatedPatientIds, loading }: { patients: Patient[]; onPatientClick: (p: Patient) => void; updatedPatientIds?: Set<string>; loading?: boolean }) {
-  const [waitTimes, setWaitTimes] = useState<Record<string, number>>({})
+function queueStatus(p: Patient, waitMinutes: number): { label: string; tone: 'critical' | 'warn' | 'ok' } {
+  const hasDoctor = Boolean(p.assignedDoctorId || p.notes)
+
+  // Overdue = critical patient still waiting with no doctor
+  if (p.priority === 'P1' && !hasDoctor && waitMinutes >= 8) {
+    return { label: 'Overdue', tone: 'critical' }
+  }
+  if (hasDoctor) {
+    return { label: 'Assigned', tone: 'ok' }
+  }
+  if (p.priority === 'P1' || p.priority === 'P2') {
+    return { label: 'Urgent', tone: 'warn' }
+  }
+  if (p.status === 'waiting') {
+    return { label: 'Waiting', tone: 'ok' }
+  }
+  return { label: p.status.replace(/_/g, ' '), tone: 'ok' }
+}
+
+function doctorLabel(p: Patient, doctorsById: Map<string, string>): string {
+  if (p.notes) return p.notes // API-resolved assignedDoctorName
+  if (p.assignedDoctorId) {
+    return doctorsById.get(p.assignedDoctorId) || p.assignedDoctorId
+  }
+  return 'Unassigned'
+}
+
+export function PatientQueue({
+  patients,
+  doctors = [],
+  onPatientClick,
+  updatedPatientIds,
+  loading,
+}: {
+  patients: Patient[]
+  doctors?: Doctor[]
+  onPatientClick: (p: Patient) => void
+  updatedPatientIds?: Set<string>
+  loading?: boolean
+}) {
+  const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    const calc = () => {
-      const w: Record<string, number> = {}
-      patients.forEach(p => w[p.id] = minutesAgo(p.arrivedAt))
-      setWaitTimes(w)
-    }
-    calc()
-    const id = setInterval(calc, 60000)
+    const id = setInterval(() => setNow(Date.now()), 15000)
     return () => clearInterval(id)
-  }, [patients])
+  }, [])
+
+  const doctorsById = new Map(doctors.map((d) => [d.id, d.name]))
 
   if (loading) {
     return (
-      <div className="card h-full p-6">
+      <div className="panel h-full p-5">
         <div className="animate-pulse space-y-4">
-          <div className="h-4 bg-slate-200 rounded w-1/4"></div>
-          <div className="h-10 bg-slate-100 rounded"></div>
-          <div className="h-10 bg-slate-100 rounded"></div>
+          <div className="h-4 bg-slate-200 rounded w-1/4" />
+          <div className="h-10 bg-slate-100 rounded" />
+          <div className="h-10 bg-slate-100 rounded" />
         </div>
       </div>
     )
@@ -37,110 +72,135 @@ export function PatientQueue({ patients, onPatientClick, updatedPatientIds, load
     return new Date(a.arrivedAt).getTime() - new Date(b.arrivedAt).getTime()
   })
 
-  const top = sorted.slice(0, 6)
+  const top = sorted.slice(0, 8)
 
   return (
-    <div className="card h-full flex flex-col bg-white p-6">
-      <div className="flex justify-between items-center mb-6">
-        <h3 className="text-base font-bold text-slate-800">Latest Transaction</h3>
+    <div className="panel h-full flex flex-col bg-white p-5">
+      <div className="flex justify-between items-center mb-4">
+        <div className="flex items-center gap-2.5">
+          <h3 className="text-[13px] font-bold text-slate-800 tracking-tight">Live Patient Queue</h3>
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+            {patients.length} waiting
+          </span>
+          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Live
+          </span>
+        </div>
+        <Link href="/patients" className="text-xs font-semibold text-brand hover:underline">
+          View All →
+        </Link>
       </div>
 
       <div className="flex-1 w-full overflow-x-auto">
-        <table className="w-full text-left min-w-[800px] align-middle">
+        <table className="w-full text-left min-w-[780px]">
           <thead>
-            <tr className="border-b border-slate-100 text-xs text-slate-400 uppercase tracking-wider font-semibold">
-              <th className="py-3 px-4 w-12 text-center">
-                <input type="checkbox" className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4 cursor-pointer" readOnly />
-              </th>
-              <th className="py-3 px-4">ID & Name</th>
-              <th className="py-3 px-4">Date</th>
-              <th className="py-3 px-4">Price</th>
-              <th className="py-3 px-4 text-center">Quantity</th>
-              <th className="py-3 px-4">Amount</th>
-              <th className="py-3 px-4">Status</th>
-              <th className="py-3 px-4">Action</th>
+            <tr className="border-b border-slate-100 text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
+              <th className="py-2.5 px-3">ID</th>
+              <th className="py-2.5 px-3">Patient</th>
+              <th className="py-2.5 px-3">Priority</th>
+              <th className="py-2.5 px-3">Score</th>
+              <th className="py-2.5 px-3">Wait</th>
+              <th className="py-2.5 px-3">Status</th>
+              <th className="py-2.5 px-3">Doctor</th>
+              <th className="py-2.5 px-3">Action</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-            {top.map((p, idx) => {
-              // Format dates to look like screenshot e.g., "02 Nov, 2019"
-              const dateStr = '02 Nov, 2019'
-              
-              // Map dynamic billing / hospital price stats
-              const priceVal = p.priority === 'P1' ? '$1,850' : p.priority === 'P2' ? '$1,234' : '$620'
-              const amountVal = p.priority === 'P1' ? '$1,850' : p.priority === 'P2' ? '$1,234' : '$620'
-              
-              // Status values matching screenshot Confirm/Cancel/Pending
-              const isConfirm = p.status !== 'waiting'
-              const statusLabel = isConfirm ? 'Confirm' : 'Pending'
-              const statusDotClass = isConfirm ? 'bg-emerald-500' : 'bg-amber-500'
-              const statusBgClass = isConfirm ? 'bg-emerald-50/50 text-emerald-600' : 'bg-amber-50/50 text-amber-600'
-
-              const initials = p.name.split(' ').map(n => n.charAt(0)).join('').slice(0, 2)
-              const bgColors = ['bg-rose-100 text-rose-700', 'bg-blue-100 text-blue-700', 'bg-amber-100 text-amber-700', 'bg-emerald-100 text-emerald-700']
-              const avatarColor = bgColors[idx % bgColors.length]
-
-              return (
-                <tr
-                  key={p.id}
-                  onClick={() => onPatientClick(p)}
-                  className={cn('cursor-pointer hover:bg-slate-50/80 transition-colors', updatedPatientIds?.has(p.id) && 'bg-teal-50/50 animate-pulse')}
-                >
-                  {/* Checkbox column */}
-                  <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4 cursor-pointer" readOnly />
-                  </td>
-
-                  {/* Avatar, ID & Name */}
-                  <td className="py-3.5 px-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${avatarColor} flex-shrink-0`}>
-                        {initials}
+          <tbody className="divide-y divide-slate-50 text-sm">
+            {top.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="py-10 text-center text-xs text-slate-400 font-semibold">
+                  No patients waiting
+                </td>
+              </tr>
+            ) : (
+              top.map((p) => {
+                const pc = priorityClasses(p.priority)
+                const wait = Math.max(
+                  0,
+                  Math.floor((now - new Date(p.arrivedAt).getTime()) / 60000)
+                )
+                const status = queueStatus(p, wait)
+                const doctor = doctorLabel(p, doctorsById)
+                return (
+                  <tr
+                    key={p.id}
+                    onClick={() => onPatientClick(p)}
+                    className={cn(
+                      'cursor-pointer hover:bg-slate-50/80 transition-colors',
+                      updatedPatientIds?.has(p.id) && 'bg-teal-50/60'
+                    )}
+                  >
+                    <td className="py-3 px-3 font-mono text-xs text-slate-500">
+                      {p.displayId || p.id}
+                    </td>
+                    <td className="py-3 px-3">
+                      <div className="font-semibold text-slate-800 text-sm leading-tight">{p.name}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        {p.age}
+                        {p.gender === 'male' ? 'M' : p.gender === 'female' ? 'F' : 'O'}
+                        {p.chiefComplaint ? (
+                          <span className="text-slate-500"> · {p.chiefComplaint}</span>
+                        ) : null}
                       </div>
-                      <div className="flex flex-col">
-                        <span className="text-xs font-mono text-slate-400">#{p.displayId || p.id.slice(0, 6)}</span>
-                        <span className="text-sm font-semibold text-slate-800 leading-tight">{p.name}</span>
-                      </div>
-                    </div>
-                  </td>
-
-                  {/* Arrived Date */}
-                  <td className="py-3.5 px-4 text-slate-500 text-xs font-semibold">{dateStr}</td>
-
-                  {/* Price */}
-                  <td className="py-3.5 px-4 text-slate-700 font-semibold tabular-nums">{priceVal}</td>
-
-                  {/* Quantity */}
-                  <td className="py-3.5 px-4 text-center text-slate-500 font-semibold tabular-nums">1</td>
-
-                  {/* Amount */}
-                  <td className="py-3.5 px-4 text-slate-700 font-semibold tabular-nums">{amountVal}</td>
-
-                  {/* Status badge exactly like screenshot */}
-                  <td className="py-3.5 px-4">
-                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${statusBgClass}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${statusDotClass}`} />
-                      {statusLabel}
-                    </span>
-                  </td>
-
-                  {/* Outline Actions */}
-                  <td className="py-3.5 px-4" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => onPatientClick(p)}
-                        className="border border-slate-200 hover:border-teal-600 hover:text-teal-600 text-slate-500 text-xs font-bold px-2.5 py-1 rounded transition-colors"
+                    </td>
+                    <td className="py-3 px-3">
+                      <span
+                        className={cn(
+                          'text-[10px] font-bold px-2 py-0.5 rounded-full',
+                          pc.bg,
+                          pc.text
+                        )}
                       >
-                        Edit
+                        {p.priority}
+                      </span>
+                    </td>
+                    <td className={cn('py-3 px-3 font-bold tabular-nums text-sm', pc.text)}>
+                      {p.urgencyScore}
+                    </td>
+                    <td className="py-3 px-3 text-xs font-semibold text-slate-600 tabular-nums">
+                      {formatWait(wait)}
+                    </td>
+                    <td className="py-3 px-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 capitalize">
+                        <span
+                          className={cn(
+                            'w-1.5 h-1.5 rounded-full',
+                            status.tone === 'critical' && 'bg-rose-500',
+                            status.tone === 'warn' && 'bg-amber-500',
+                            status.tone === 'ok' && status.label === 'Assigned' && 'bg-emerald-500',
+                            status.tone === 'ok' && status.label !== 'Assigned' && 'bg-slate-300'
+                          )}
+                        />
+                        {status.label}
+                      </span>
+                    </td>
+                    <td
+                      className={cn(
+                        'py-3 px-3 text-xs',
+                        doctor === 'Unassigned'
+                          ? 'italic text-slate-400'
+                          : 'font-medium text-slate-700'
+                      )}
+                    >
+                      {doctor}
+                    </td>
+                    <td className="py-3 px-3">
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-brand hover:underline"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onPatientClick(p)
+                        }}
+                      >
+                        View →
                       </button>
-                      <button className="border border-rose-100 hover:bg-rose-50 text-rose-500 text-xs font-bold px-2.5 py-1 rounded transition-colors">
-                        Cancel
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              )
-            })}
+                    </td>
+                  </tr>
+                )
+              })
+            )}
           </tbody>
         </table>
       </div>

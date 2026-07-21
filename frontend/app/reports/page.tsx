@@ -1,41 +1,52 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { PageHeader } from '@/components/shared'
 import { generateBriefing, generateShiftReport } from '@/lib/api'
-import { FileText, RefreshCw, Clock, Printer, Loader2, ListChecks, CheckCircle } from 'lucide-react'
-import { usePathname } from 'next/navigation'
+import { cn } from '@/lib/utils'
+import { FileText, RefreshCw, Clock, Printer, Loader2, CheckCircle } from 'lucide-react'
+import toast from 'react-hot-toast'
 
 export default function ReportsPage() {
-  const [briefing, setBriefing] = useState<any>(null)
+  const [briefing, setBriefing] = useState<{
+    briefing: string
+    highlights: string[]
+  } | null>(null)
   const [isBriefingLoading, setIsBriefingLoading] = useState(false)
-  const [shiftReport, setShiftReport] = useState<any>(null)
+  const [shiftReport, setShiftReport] = useState<{
+    report: string
+    pendingItems: string[]
+    immediateActions: string[]
+  } | null>(null)
   const [isShiftLoading, setIsShiftLoading] = useState(false)
   const [reportTime, setReportTime] = useState<string | null>(null)
 
-  const loadBriefing = async () => {
+  const loadBriefing = useCallback(async () => {
     setIsBriefingLoading(true)
     try {
       const data = await generateBriefing('Operator')
       setBriefing(data)
     } catch (e) {
       console.error(e)
+      toast.error('Could not generate briefing')
+      setBriefing(null)
     } finally {
       setIsBriefingLoading(false)
     }
-  }
+  }, [])
 
   const triggerShiftReport = async () => {
     setIsShiftLoading(true)
     try {
       const now = new Date()
       const end = now.toISOString()
-      const start = new Date(now.getTime() - 8 * 3600000).toISOString() // 8 hours ago
+      const start = new Date(now.getTime() - 8 * 3600000).toISOString()
       const data = await generateShiftReport(start, end)
       setShiftReport(data)
       setReportTime(new Date().toLocaleTimeString())
     } catch (e) {
       console.error(e)
+      toast.error('Could not generate shift report')
     } finally {
       setIsShiftLoading(false)
     }
@@ -43,17 +54,16 @@ export default function ReportsPage() {
 
   useEffect(() => {
     loadBriefing()
-  }, [])
+  }, [loadBriefing])
 
   return (
     <>
-      <PageHeader 
-        title="AI Operational Reports" 
-        subtitle="Automated shift summaries, capacity audits, and briefings."
+      <PageHeader
+        title="AI Operational Reports"
+        subtitle="Live briefings and shift summaries from current hospital capacity."
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Real-time Triage Briefing */}
         <div className="card p-6 flex flex-col justify-between">
           <div>
             <div className="flex justify-between items-center mb-6">
@@ -62,6 +72,7 @@ export default function ReportsPage() {
                 <h2 className="text-lg font-bold text-text-primary">Live Operations Briefing</h2>
               </div>
               <button
+                type="button"
                 onClick={loadBriefing}
                 disabled={isBriefingLoading}
                 className="text-xs font-semibold text-brand hover:text-brand-700 transition-colors flex items-center gap-1 disabled:opacity-50"
@@ -70,11 +81,11 @@ export default function ReportsPage() {
                 Re-generate
               </button>
             </div>
-            
+
             {isBriefingLoading ? (
               <div className="py-20 flex flex-col items-center justify-center gap-3">
                 <Loader2 className="w-6 h-6 animate-spin text-brand" />
-                <span className="text-xs text-text-secondary">AI briefing generating...</span>
+                <span className="text-xs text-text-secondary">Generating briefing from live data…</span>
               </div>
             ) : briefing ? (
               <div className="space-y-4">
@@ -83,10 +94,15 @@ export default function ReportsPage() {
                 </div>
                 {briefing.highlights && briefing.highlights.length > 0 && (
                   <div className="mt-4">
-                    <h4 className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-2">Key Focus Areas</h4>
+                    <h4 className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-2">
+                      Key Focus Areas
+                    </h4>
                     <div className="space-y-2">
                       {briefing.highlights.map((h: string, idx: number) => (
-                        <div key={idx} className="flex items-start gap-2.5 text-sm text-text-secondary leading-relaxed">
+                        <div
+                          key={idx}
+                          className="flex items-start gap-2.5 text-sm text-text-secondary leading-relaxed"
+                        >
                           <CheckCircle className="w-4 h-4 text-brand shrink-0 mt-0.5" />
                           <span>{h}</span>
                         </div>
@@ -96,12 +112,13 @@ export default function ReportsPage() {
                 )}
               </div>
             ) : (
-              <div className="py-12 text-center text-text-tertiary">Failed to generate briefing. Please retry.</div>
+              <div className="py-12 text-center text-text-tertiary">
+                Failed to generate briefing. Please retry.
+              </div>
             )}
           </div>
         </div>
 
-        {/* Shift Handover Audit */}
         <div className="card p-6 flex flex-col justify-between">
           <div>
             <div className="flex justify-between items-center mb-6">
@@ -110,7 +127,9 @@ export default function ReportsPage() {
                 <h2 className="text-lg font-bold text-text-primary">Shift Handover Summary</h2>
               </div>
               {reportTime && (
-                <span className="text-xs text-text-tertiary tabular-nums">Generated {reportTime}</span>
+                <span className="text-xs text-text-tertiary tabular-nums">
+                  Generated {reportTime}
+                </span>
               )}
             </div>
 
@@ -118,8 +137,11 @@ export default function ReportsPage() {
               <div className="py-16 text-center">
                 <Clock className="w-12 h-12 text-text-tertiary mx-auto mb-4" />
                 <h3 className="font-bold text-text-primary mb-1">Generate Shift Summary</h3>
-                <p className="text-sm text-text-secondary mb-6 max-w-sm mx-auto">Create a comprehensive handover report for the incoming shift lead.</p>
+                <p className="text-sm text-text-secondary mb-6 max-w-sm mx-auto">
+                  Create a handover report from the last 8 hours of live queue and capacity.
+                </p>
                 <button
+                  type="button"
                   onClick={triggerShiftReport}
                   className="px-6 py-2.5 bg-brand hover:bg-brand-600 text-white rounded-button font-bold text-sm transition-colors shadow-sm"
                 >
@@ -129,7 +151,9 @@ export default function ReportsPage() {
             ) : isShiftLoading ? (
               <div className="py-20 flex flex-col items-center justify-center gap-3">
                 <Loader2 className="w-6 h-6 animate-spin text-brand" />
-                <span className="text-xs text-text-secondary">Scanning databases and generating shift audit...</span>
+                <span className="text-xs text-text-secondary">
+                  Building shift audit from live data…
+                </span>
               </div>
             ) : shiftReport ? (
               <div className="space-y-5">
@@ -140,7 +164,9 @@ export default function ReportsPage() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {shiftReport.pendingItems && shiftReport.pendingItems.length > 0 && (
                     <div className="p-4 rounded-lg bg-warning-bg border border-warning-border/40">
-                      <h4 className="text-xs font-bold text-warning uppercase tracking-wider mb-2">Pending Items</h4>
+                      <h4 className="text-xs font-bold text-warning uppercase tracking-wider mb-2">
+                        Pending Items
+                      </h4>
                       <ul className="space-y-1.5 text-xs text-warning-800 font-medium">
                         {shiftReport.pendingItems.map((item: string, i: number) => (
                           <li key={i} className="flex gap-1.5 items-start">
@@ -154,7 +180,9 @@ export default function ReportsPage() {
 
                   {shiftReport.immediateActions && shiftReport.immediateActions.length > 0 && (
                     <div className="p-4 rounded-lg bg-critical-bg border border-critical-border/40">
-                      <h4 className="text-xs font-bold text-critical uppercase tracking-wider mb-2">Immediate Actions</h4>
+                      <h4 className="text-xs font-bold text-critical uppercase tracking-wider mb-2">
+                        Immediate Actions
+                      </h4>
                       <ul className="space-y-1.5 text-xs text-critical-800 font-medium">
                         {shiftReport.immediateActions.map((action: string, i: number) => (
                           <li key={i} className="flex gap-1.5 items-start">
@@ -169,12 +197,14 @@ export default function ReportsPage() {
 
                 <div className="flex gap-3 pt-3">
                   <button
+                    type="button"
                     onClick={triggerShiftReport}
                     className="px-4 py-2 border border-border text-text-primary text-xs font-bold rounded-button hover:bg-bg-page transition-colors"
                   >
                     Regenerate
                   </button>
                   <button
+                    type="button"
                     onClick={() => window.print()}
                     className="px-4 py-2 border border-border text-text-primary text-xs font-bold rounded-button hover:bg-bg-page transition-colors flex items-center gap-1.5"
                   >
@@ -188,8 +218,4 @@ export default function ReportsPage() {
       </div>
     </>
   )
-}
-
-function cn(...classes: any[]) {
-  return classes.filter(Boolean).join(' ')
 }

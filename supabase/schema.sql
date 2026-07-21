@@ -1,5 +1,5 @@
 -- ============================================================
--- Opus Pulse AI — DB for dashboard / intake / queue / AI screens
+-- AegisOps AI — DB for dashboard / intake / queue / AI screens
 -- Run once in Supabase SQL Editor
 -- ============================================================
 

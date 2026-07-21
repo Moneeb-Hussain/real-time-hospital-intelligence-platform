@@ -49,7 +49,7 @@ export function Navbar() {
           {/* Logo */}
           <Link href="/" className="flex items-center group">
             <div className="relative w-44 h-12">
-              <Image src="/logo.png" alt="Opus Pulse AI" fill className="object-contain" priority />
+              <Image src="/logo.png" alt="AegisOps AI" fill className="object-contain" priority />
             </div>
           </Link>
 
