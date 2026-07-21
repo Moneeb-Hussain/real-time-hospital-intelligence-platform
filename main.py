@@ -27,9 +27,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import and mount routes
+# ============================================================
+# DIRECT ROUTES (BEFORE MOUNTING)
+# ============================================================
+
+@app.get("/resources")
+async def get_resources():
+    """Get all resources directly"""
+    try:
+        response = supabase.table('resources').select('*').execute()
+        return response.data
+    except Exception as e:
+        return {"error": str(e)}
+
+# ============================================================
+# MOUNT PATIENT ROUTES
+# ============================================================
+
 from app.routes.patient_routes import router
 app.include_router(router, prefix="/api")
+
+# ============================================================
+# ROOT ENDPOINT
+# ============================================================
 
 @app.get("/")
 async def root():
@@ -44,13 +64,19 @@ async def root():
             "generate": "/api/recommendations/generate",
             "validate": "/api/recommendations/validate",
             "decision": "/api/recommendations/decision",
-            "dashboard": "/api/dashboard"
+            "dashboard": "/api/dashboard",
+            "resources": "/resources"
         }
     }
+
+# ============================================================
+# RUN SERVER
+# ============================================================
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"\n🚀 Server running on http://localhost:{port}")
     print(f"📊 Dashboard: http://localhost:{port}/api/dashboard")
-    print(f"🏥 Health: http://localhost:{port}/api/health\n")
+    print(f"🏥 Health: http://localhost:{port}/api/health")
+    print(f"📦 Resources: http://localhost:{port}/resources\n")
     uvicorn.run(app, host="0.0.0.0", port=port)
