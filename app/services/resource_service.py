@@ -76,7 +76,7 @@ def map_equipment(row: dict[str, Any]) -> dict[str, Any]:
         "type": row.get("sub_type") or "equipment",
         "status": "available" if available else "occupied",
         "assignedPatientId": str(row["assigned_to"]) if row.get("assigned_to") else None,
-        "department": (row.get("sub_type") or "ER").upper(),
+        "department": (row.get("unit") or row.get("sub_type") or "ER").upper(),
     }
 
 

@@ -135,6 +135,7 @@ def resources_to_ai_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
     beds = [
         {
             "bedId": str(row.get("id")),
+            "name": row.get("name") or row.get("resource_name") or str(row.get("id")),
             "unit": row.get("unit")
             or row.get("sub_type")
             or row.get("name")
@@ -147,6 +148,7 @@ def resources_to_ai_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
     doctors = [
         {
             "doctorId": str(row.get("id")),
+            "name": row.get("name") or row.get("resource_name") or "Doctor",
             "specialty": row.get("specialty")
             or row.get("unit")
             or row.get("sub_type")
@@ -154,6 +156,7 @@ def resources_to_ai_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "currentLoad": _as_int(
                 row.get("workload_count") or row.get("workload"), default=0
             ),
+            "maxLoad": _as_int(row.get("max_load"), default=6),
         }
         for row in available
         if row.get("resource_type") == "doctor"
@@ -162,6 +165,8 @@ def resources_to_ai_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
         {
             "equipmentId": str(row.get("id")),
             "name": row.get("name") or row.get("resource_name") or "Equipment",
+            "type": row.get("sub_type") or "equipment",
+            "unit": row.get("unit") or row.get("specialty"),
         }
         for row in available
         if row.get("resource_type") == "equipment"

@@ -238,6 +238,224 @@ def generate_shift_report(
     }
 
 
+COPILOT_SYSTEM_PROMPT = """You are the hospital operations AI Copilot.
+Answer using only the live hospital snapshot provided by the backend.
+
+Rules:
+- Stay operational: capacity, queues, staffing, equipment, alerts, recommendations.
+- Do not diagnose, prescribe, or give clinical treatment advice.
+- Prefer short, clear answers with concrete numbers from the snapshot.
+- If the snapshot lacks data for the question, say what is missing.
+- Never invent resource IDs, patient IDs, or occupancy figures.
+"""
+
+
+def generate_copilot_reply(message: str, snapshot: dict[str, Any]) -> str:
+    """Answer an operations question from the live hospital snapshot."""
+    question = (message or "").strip()
+    if not question:
+        return "Ask a question about current hospital capacity, queues, staffing, or alerts."
+
+    try:
+        return _generate_copilot_with_providers(question, snapshot)
+    except Exception as exc:
+        print(f"[ai_service] Copilot LLM failed; using snapshot fallback: {exc}")
+        return _fallback_copilot_reply(question, snapshot)
+
+
+def _generate_copilot_with_providers(message: str, snapshot: dict[str, Any]) -> str:
+    providers: list[tuple[str, str]] = []
+    if os.getenv("OPENAI_API_KEY"):
+        providers.append(("openai", os.getenv("OPENAI_MODEL", "gpt-4.1-mini")))
+    if os.getenv("GEMINI_API_KEY"):
+        providers.extend(
+            [
+                ("gemini", os.getenv("GEMINI_PRIMARY_MODEL", "gemini-2.5-flash")),
+                (
+                    "gemini",
+                    os.getenv("GEMINI_SECONDARY_MODEL", "gemini-2.5-flash-lite"),
+                ),
+            ]
+        )
+    providers = list(dict.fromkeys(providers))
+    if not providers:
+        raise RuntimeError("No OpenAI or Gemini API key is configured")
+
+    attempts = _llm_attempts()
+    failures: list[str] = []
+    for provider, model in providers:
+        for attempt in range(1, attempts + 1):
+            try:
+                if provider == "openai":
+                    return _call_openai_text(message, snapshot, model)
+                return _call_gemini_text(message, snapshot, model)
+            except Exception as exc:
+                failure = (
+                    f"{provider}/{model} attempt {attempt}/{attempts}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                failures.append(failure)
+                print(f"[ai_service] {failure}")
+    raise RuntimeError(" | ".join(failures))
+
+
+def _call_openai_text(message: str, snapshot: dict[str, Any], model: str) -> str:
+    from urllib.request import Request, urlopen
+
+    request = Request(
+        OPENAI_URL,
+        headers={
+            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": COPILOT_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Operator question: {message}\n\n"
+                            f"Live hospital snapshot:\n"
+                            f"{json.dumps(snapshot, default=str)}"
+                        ),
+                    },
+                ],
+                "temperature": 0.2,
+            }
+        ).encode("utf-8"),
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        response_data = json.loads(response.read().decode("utf-8"))
+    content = response_data["choices"][0]["message"]["content"]
+    text = str(content or "").strip()
+    if not text:
+        raise ValueError("OpenAI returned an empty copilot answer")
+    return text
+
+
+def _call_gemini_text(message: str, snapshot: dict[str, Any], model: str) -> str:
+    from urllib.parse import quote
+    from urllib.request import Request, urlopen
+
+    api_key = os.environ["GEMINI_API_KEY"]
+    url = GEMINI_URL.format(model=quote(model, safe=""))
+    request = Request(
+        url,
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        data=json.dumps(
+            {
+                "system_instruction": {"parts": [{"text": COPILOT_SYSTEM_PROMPT}]},
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": (
+                                    f"Operator question: {message}\n\n"
+                                    f"Live hospital snapshot:\n"
+                                    f"{json.dumps(snapshot, default=str)}"
+                                )
+                            }
+                        ],
+                    }
+                ],
+                "generationConfig": {"temperature": 0.2},
+            }
+        ).encode("utf-8"),
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        response_data = json.loads(response.read().decode("utf-8"))
+    candidates = response_data.get("candidates") or []
+    if not candidates:
+        feedback = response_data.get("promptFeedback") or "No candidate returned"
+        raise ValueError(f"Gemini returned no answer: {feedback}")
+    parts = candidates[0].get("content", {}).get("parts") or []
+    content = "".join(str(part.get("text") or "") for part in parts).strip()
+    if not content:
+        raise ValueError("Gemini returned an empty copilot answer")
+    return content
+
+
+def _fallback_copilot_reply(message: str, snapshot: dict[str, Any]) -> str:
+    text = message.lower()
+    beds = snapshot.get("beds") or {}
+    icu = beds.get("icu") or {}
+    er = beds.get("er") or {}
+    queue = snapshot.get("queue") or {}
+    doctors = snapshot.get("doctors") or {}
+    alerts = snapshot.get("alerts") or []
+    pending = snapshot.get("pendingRecommendations") or []
+    doctor_list = doctors.get("all") or doctors.get("available") or []
+
+    if "bottleneck" in text or "main issue" in text:
+        bottlenecks = []
+        if _as_int(icu.get("occupancyPct")) >= 85:
+            bottlenecks.append(f"ICU near capacity ({icu.get('occupancyPct')}%)")
+        if _as_int(er.get("occupancyPct")) >= 85:
+            bottlenecks.append(f"ER near capacity ({er.get('occupancyPct')}%)")
+        if _as_int(queue.get("p1Count")) > 0:
+            bottlenecks.append(f"{queue.get('p1Count')} P1 patients waiting")
+        if len(pending) > 0:
+            bottlenecks.append(f"{len(pending)} recommendations awaiting review")
+        if not bottlenecks:
+            return "No major bottleneck is visible in the current snapshot. Capacity and queue look manageable."
+        return "Main bottleneck(s): " + "; ".join(bottlenecks) + "."
+
+    if "doctor" in text and ("workload" in text or "lowest" in text or "least" in text):
+        if not doctor_list:
+            return "No doctor workload data is available in the current snapshot."
+        ranked = sorted(
+            doctor_list,
+            key=lambda d: (
+                _as_int(d.get("currentLoad") or d.get("workload_count")),
+                str(d.get("name") or ""),
+            ),
+        )
+        top = ranked[0]
+        return (
+            f"{top.get('name') or top.get('id')} currently has the lowest workload "
+            f"({_as_int(top.get('currentLoad') or top.get('workload_count'))}/"
+            f"{_as_int(top.get('maxLoad') or top.get('max_load'), default=6)})."
+        )
+
+    if "icu" in text:
+        return (
+            f"ICU has {icu.get('available', 0)} of {icu.get('total', 0)} beds available "
+            f"({icu.get('occupancyPct', 0)}% occupied)."
+        )
+
+    if "alert" in text:
+        if not alerts:
+            return "There are no active alerts right now."
+        lines = [
+            f"- [{a.get('severity') or 'INFO'}] {a.get('message')}"
+            for a in alerts[:5]
+            if a.get("message")
+        ]
+        return f"{len(alerts)} active alert(s):\n" + "\n".join(lines)
+
+    if "queue" in text or "waiting" in text or "patient" in text:
+        return (
+            f"Waiting queue: P1={queue.get('p1Count', 0)}, "
+            f"P2={queue.get('p2Count', 0)}, "
+            f"P3={queue.get('p3Count', 0)}, "
+            f"P4={queue.get('p4Count', 0)}."
+        )
+
+    return (
+        f"Live snapshot: ICU {icu.get('available', 0)}/{icu.get('total', 0)} free, "
+        f"ER {er.get('available', 0)}/{er.get('total', 0)} free, "
+        f"{len(doctor_list)} doctors tracked, "
+        f"{queue.get('p1Count', 0)} P1 waiting, "
+        f"{len(alerts)} active alerts, "
+        f"{len(pending)} pending recommendations."
+    )
+
+
 def _generate_with_provider_fallbacks(
     instruction: str, payload: dict[str, Any]
 ) -> dict[str, Any]:
