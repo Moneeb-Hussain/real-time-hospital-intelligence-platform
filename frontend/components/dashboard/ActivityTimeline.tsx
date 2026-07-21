@@ -41,13 +41,17 @@ export function ActivityTimeline({ activities, loading }: { activities: Activity
     return type.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
   }
 
-  const getDetailSnippet = (detail: any) => {
-    if (!detail) return ''
-    if (detail.patientId) return `Patient ${detail.patientId}`
+  const getDetailSnippet = (act: ActivityLog) => {
+    const detail = act.detail as Record<string, unknown> | null
+    if (!detail) return act.patientId ? `Patient ${act.patientId}` : ''
+    if (typeof detail.description === 'string' && detail.description) return detail.description
     if (detail.priority) return `Assigned Priority ${detail.priority}`
-    if (detail.unit) return `Recommended ${detail.unit}`
     if (detail.alertType) return `Alert: ${detail.alertType}`
-    return Object.values(detail)[0] as string
+    if (detail.type) return `Alert: ${detail.type}`
+    if (detail.unit) return `Recommended ${detail.unit}`
+    if (act.patientId) return `Patient ${act.patientId}`
+    const first = Object.values(detail).find((v) => typeof v === 'string' && v)
+    return (first as string) || ''
   }
 
   return (
@@ -84,7 +88,7 @@ export function ActivityTimeline({ activities, loading }: { activities: Activity
                       <div className="text-[10px] uppercase tracking-wider font-medium text-text-tertiary">{timeAgo(act.createdAt)}</div>
                     </div>
                     <div className="text-xs text-text-secondary truncate pr-4">
-                      {getDetailSnippet(act.detail)}
+                      {getDetailSnippet(act)}
                     </div>
                   </div>
                 </div>

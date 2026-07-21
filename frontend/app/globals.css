@@ -36,6 +36,14 @@
     @apply shadow-card-hover -translate-y-1 border-border-strong;
   }
 
+  /* Static panel — no lift on hover (tall dashboard widgets) */
+  .panel {
+    @apply bg-bg-card border border-border rounded-card shadow-card;
+  }
+  .panel:hover {
+    @apply shadow-card-hover border-border-strong;
+  }
+
   /* AI content always gets purple left border and purple tint */
   .ai-content {
     @apply border-l-4 border-ai bg-ai-50 rounded-r-card;

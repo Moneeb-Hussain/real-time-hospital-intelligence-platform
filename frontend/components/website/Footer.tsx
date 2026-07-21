@@ -29,7 +29,7 @@ export function Footer() {
             {/* Logo */}
             <div className="flex items-center">
               <div className="relative w-44 h-12">
-                <Image src="/logo.png" alt="Opus Pulse AI Logo" fill className="object-contain" />
+                <Image src="/logo.png" alt="AegisOps AI Logo" fill className="object-contain" />
               </div>
             </div>
 

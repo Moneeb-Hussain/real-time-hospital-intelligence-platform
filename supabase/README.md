@@ -1,4 +1,4 @@
-# Database for Opus Pulse screens
+# Database for AegisOps AI screens
 
 ## Apply now
 1. Supabase → SQL Editor

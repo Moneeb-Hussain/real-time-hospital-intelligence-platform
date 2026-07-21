@@ -27,7 +27,54 @@ export function getHealthScore(): Promise<{ score: number; snapshotTime: string 
 }
 
 export function getPatientQueue(): Promise<{ items: Patient[]; total: number }> {
-  return fetchApi<any>('/api/dashboard').then(res => ({ items: res.waitingPatients || [], total: res.totalWaiting || 0 }))
+  return fetchApi<any>('/api/dashboard').then((res) => {
+    if (res?.queuePreview && Array.isArray(res.queuePreview)) {
+      const items = res.queuePreview.map((row: any) => {
+        const v = row.vitals || {}
+        const rawStatus = String(row.status || 'waiting').toLowerCase()
+        const status = (
+          rawStatus === 'awaiting_review' || rawStatus === 'registered'
+            ? 'waiting'
+            : rawStatus
+        ) as Patient['status']
+        return {
+          id: row.patientId,
+          displayId: row.patientId,
+          name: row.name || row.patientId,
+          age: row.age || 0,
+          gender: (row.gender || 'other') as Patient['gender'],
+          chiefComplaint: row.complaint || '',
+          symptoms: row.symptoms || [],
+          vitals: {
+            heartRate: v.heartRate || 0,
+            bpSystolic: v.systolicBP || 0,
+            bpDiastolic: v.diastolicBP || 0,
+            spo2: v.oxygenSaturation || 0,
+            temperature: v.temperature || 0,
+            conscious: String(row.consciousness || 'ALERT').toUpperCase() !== 'UNCONSCIOUS',
+          },
+          urgencyScore: row.urgencyScore || 0,
+          priority: (row.priority || 'P4') as Patient['priority'],
+          status,
+          assignedBedId: row.assignedBedId || null,
+          assignedDoctorId: row.assignedDoctorId || null,
+          // Prefer resolved name from API when present
+          notes: row.assignedDoctorName || undefined,
+          arrivedAt: row.createdAt || new Date().toISOString(),
+        }
+      }) as Patient[]
+      return { items, total: res.summary?.waitingPatients ?? items.length }
+    }
+
+    // Mock / demo shape: already Patient-like objects
+    const waiting = Array.isArray(res?.waitingPatients) ? res.waitingPatients : []
+    return { items: waiting as Patient[], total: res?.totalWaiting ?? waiting.length }
+  })
+}
+
+/** Full patient directory (all statuses). */
+export function getPatients(): Promise<Patient[]> {
+  return fetchApi<Patient[]>('/api/patients')
 }
 
 export function getPatientById(id: string): Promise<{ patient: Patient; recommendation: Recommendation | null; activity: ActivityLog[] }> {
@@ -67,6 +114,38 @@ export function getSnapshot(): Promise<HospitalSnapshot> {
   return fetchApi<HospitalSnapshot>('/api/resources/summary')
 }
 
+export function getResourcesInventory(): Promise<{
+  beds: Array<{
+    id: string
+    label: string
+    unitCode: string
+    status: string
+    patientId: string | null
+    patientName?: string | null
+  }>
+  doctors: Doctor[]
+  equipment: Array<{
+    id: string
+    label: string
+    type: string
+    typeLabel?: string
+    status: string
+    assignedPatientId: string | null
+    patientName?: string | null
+    department?: string
+  }>
+  counts: {
+    bedsFree: number
+    bedsTotal: number
+    doctorsAvailable: number
+    doctorsTotal: number
+    equipmentFree: number
+    equipmentTotal: number
+  }
+}> {
+  return fetchApi('/api/resources/inventory')
+}
+
 export function getDepartmentStatus(): Promise<DepartmentStatus[]> {
   return fetchApi<DepartmentStatus[]>('/api/departments/status')
 }
@@ -95,14 +174,66 @@ export function generateShiftReport(shiftStart: string, shiftEnd: string): Promi
   return fetchApi<{ report: string; pendingItems: string[]; immediateActions: string[] }>('/api/ai/shift-report', { method: 'POST', body: JSON.stringify({ shiftStart, shiftEnd }) })
 }
 
-export function runSimulation(data: object): Promise<{ summary: string; riskLevel: string; projectedImpact: Record<string, number>; bottlenecks: string[]; recommendedActions: string[] }> {
-  return fetchApi<any>('/api/ai/simulate', { method: 'POST', body: JSON.stringify(data) })
+export function runSimulation(data: object): Promise<{
+  summary: string
+  riskLevel: string
+  baseline?: Record<string, number>
+  projectedImpact: Record<string, number>
+  bottlenecks: string[]
+  recommendedActions: string[]
+}> {
+  return fetchApi('/api/ai/simulate', { method: 'POST', body: JSON.stringify(data) })
 }
 
-export function registerPatient(patientData: any): Promise<any> {
-  return fetchApi<any>('/patient', {
+export function registerPatient(patientData: {
+  name: string
+  age: number
+  gender?: string
+  arrivalType?: string
+  complaint: string
+  symptoms: string[]
+  vitals: {
+    heartRate: number
+    oxygenSaturation: number
+    systolicBP: number
+    diastolicBP: number
+    temperature: number
+  }
+  consciousness?: string
+}): Promise<{ patientId: string; status: string; createdAt?: string }> {
+  return fetchApi('/api/patients', {
     method: 'POST',
-    body: JSON.stringify(patientData)
+    body: JSON.stringify(patientData),
+  })
+}
+
+export function evaluatePatient(patientId: string): Promise<{
+  patientId: string
+  urgencyScore: number
+  priority: string
+  triggeredRules: string[]
+  queuePosition: number
+}> {
+  return fetchApi(`/api/patients/${patientId}/evaluate`, { method: 'POST', body: JSON.stringify({}) })
+}
+
+/** Live triage preview — same rules as backend priority engine (no DB write). */
+export function previewTriage(patientData: {
+  age: number
+  complaint: string
+  symptoms: string[]
+  consciousness: string
+  vitals: {
+    heartRate: number
+    oxygenSaturation: number
+    systolicBP: number
+    diastolicBP: number
+    temperature: number
+  }
+}): Promise<{ score: number; level: string; reasons: string[] }> {
+  return fetchApi('/api/patients/preview-triage', {
+    method: 'POST',
+    body: JSON.stringify(patientData),
   })
 }
 

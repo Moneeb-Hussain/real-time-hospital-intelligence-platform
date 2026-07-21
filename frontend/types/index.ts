@@ -157,6 +157,10 @@ export interface GPTRecommendationPayload {
 export interface Recommendation {
   id: string
   patientId: string
+  patientName?: string
+  complaint?: string
+  patientPriority?: Priority
+  urgencyScore?: number
   payload: GPTRecommendationPayload
   validationStatus: ValidationStatus
   validationDetails: ValidationDetail
@@ -174,8 +178,8 @@ export interface Recommendation {
 
 // ── ALERTS ────────────────────────────────────────────────────────────────
 export type AlertType =
-  | 'ICU_FULL' | 'ER_NEAR_CAPACITY' | 'DOCTOR_OVERLOADED'
-  | 'EQUIPMENT_LOW' | 'HIGH_RISK_WAITING' | 'DEPARTMENT_CRITICAL'
+  | 'ICU_FULL' | 'ER_NEAR_CAPACITY' | 'DOCTOR_OVERLOADED' | 'DOCTOR_OVERLOAD'
+  | 'EQUIPMENT_LOW' | 'HIGH_RISK_WAITING' | 'DEPARTMENT_CRITICAL' | string
 
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 
@@ -212,8 +216,13 @@ export interface KpiData {
   criticalTrend: number
   waitingPatients: number
   waitingTrend: number
+  activePatients?: number
+  activePatientsPct?: number
   icuBedsAvailable: number
   icuBedsTotal: number
+  bedsTotal?: number
+  bedsOccupied?: number
+  bedOccupancyPct?: number
   doctorsAvailable: number
   doctorsTotal: number
   avgWaitMinutes: number

@@ -1,32 +1,24 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
-
 
 import { PageHeader, ErrorBoundary } from '@/components/shared'
 import { KpiCards } from '@/components/dashboard/KpiCards'
-import { HospitalHealthScore } from '@/components/dashboard/HospitalHealthScore'
 import { PatientQueue } from '@/components/dashboard/PatientQueue'
 import { AlertsPanel } from '@/components/dashboard/AlertsPanel'
 import { ResourceBars } from '@/components/dashboard/ResourceBars'
-import { PriorityMixChart } from '@/components/dashboard/PriorityMixChart'
 import { DepartmentOccupancy } from '@/components/dashboard/DepartmentOccupancy'
-import { DoctorWorkload } from '@/components/dashboard/DoctorWorkload'
-import { WaitTimeTrend } from '@/components/dashboard/WaitTimeTrend'
-import { OverviewChart } from '@/components/dashboard/OverviewChart'
 import { RecommendationFeed } from '@/components/dashboard/RecommendationFeed'
 import { ActivityTimeline } from '@/components/dashboard/ActivityTimeline'
 import { PatientSlideOver } from '@/components/dashboard/PatientSlideOver'
-import { CopilotPanel } from '@/components/ai/CopilotPanel'
 import { BriefingModal } from '@/components/ai/BriefingModal'
 import { SimulationModal } from '@/components/ai/SimulationModal'
-import { ShiftReportDrawer } from '@/components/ai/ShiftReportDrawer'
 
-import { 
-  getKpis, getHealthScore, getPatientQueue, getAlerts, getSnapshot, 
-  getRecommendations, getActivityLog, getCharts, getDepartmentStatus, getDoctors,
+import {
+  getKpis, getPatientQueue, getAlerts, getSnapshot,
+  getRecommendations, getActivityLog, getDepartmentStatus, getDoctors,
   approveRecommendation, rejectRecommendation, acknowledgeAlert, generateRecommendation
 } from '@/lib/api'
 import { supabase } from '@/lib/supabase-browser'
@@ -35,46 +27,55 @@ import type { KpiData, Patient, Alert, HospitalSnapshot, Recommendation, Activit
 
 export default function DashboardPage() {
   const [kpis, setKpis] = useState<KpiData | null>(null)
-  const [healthScore, setHealthScore] = useState<{ score: number; snapshotTime: string } | null>(null)
   const [queue, setQueue] = useState<Patient[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [snapshot, setSnapshot] = useState<HospitalSnapshot | null>(null)
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([])
-  const [charts, setCharts] = useState<any>(null)
-  const [departments, setDepartments] = useState<DepartmentStatus[]>([])
+  const [departments, setDepartments] = useState<DepartmentStatus[] | null>(null)
   const [doctors, setDoctors] = useState<Doctor[]>([])
-  
+  const [loading, setLoading] = useState(true)
+
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null)
   const [updatedPatientIds, setUpdatedPatientIds] = useState<Set<string>>(new Set())
   const [showBriefing, setShowBriefing] = useState(false)
   const [showSimulation, setShowSimulation] = useState(false)
-  const [showShiftReport, setShowShiftReport] = useState(false)
 
-  const fetchKpis = async () => { try { setKpis(await getKpis()) } catch(e) { console.error(e) } }
-  const fetchQueue = async () => { try { const d = await getPatientQueue(); setQueue(d.items) } catch(e) { console.error(e) } }
-  const fetchAlerts = async () => { try { setAlerts(await getAlerts()) } catch(e) { console.error(e) } }
-  const fetchSnapshot = async () => { try { setSnapshot(await getSnapshot()) } catch(e) { console.error(e) } }
-  const fetchRecommendations = async () => { try { setRecommendations(await getRecommendations('pending')) } catch(e) { console.error(e) } }
-  const fetchActivity = async () => { try { setActivityLog(await getActivityLog(12)) } catch(e) { console.error(e) } }
+  const fetchKpis = async () => { try { setKpis(await getKpis()) } catch (e) { console.error(e) } }
+  const fetchQueue = async () => { try { const d = await getPatientQueue(); setQueue(d.items) } catch (e) { console.error(e) } }
+  const fetchAlerts = async () => { try { setAlerts(await getAlerts()) } catch (e) { console.error(e) } }
+  const fetchSnapshot = async () => { try { setSnapshot(await getSnapshot()) } catch (e) { console.error(e) } }
+  const fetchRecommendations = async () => { try { setRecommendations(await getRecommendations('pending')) } catch (e) { console.error(e) } }
+  const fetchActivity = async () => { try { setActivityLog(await getActivityLog(12)) } catch (e) { console.error(e) } }
 
-  const fetchAll = async () => {
-    await Promise.all([
-      fetchKpis(),
-      fetchQueue(),
-      fetchAlerts(),
-      fetchSnapshot(),
-      fetchRecommendations(),
-      fetchActivity(),
-      getCharts().then(setCharts).catch(()=>{}),
-      getDepartmentStatus().then(setDepartments).catch(()=>{}),
-      getDoctors().then(setDoctors).catch(()=>{}),
-      getHealthScore().then(setHealthScore).catch(()=>{})
-    ])
+  const fetchAll = async (isInitial = false) => {
+    if (isInitial) setLoading(true)
+    try {
+      await Promise.all([
+        fetchKpis(),
+        fetchQueue(),
+        fetchAlerts(),
+        fetchSnapshot(),
+        fetchRecommendations(),
+        fetchActivity(),
+        getDepartmentStatus().then(setDepartments).catch(() => setDepartments([])),
+        getDoctors().then(setDoctors).catch(() => {}),
+      ])
+    } finally {
+      if (isInitial) setLoading(false)
+    }
   }
 
   useEffect(() => {
-    fetchAll()
+    fetchAll(true)
+
+    const poll = setInterval(() => {
+      fetchQueue()
+      fetchKpis()
+      fetchAlerts()
+      fetchRecommendations()
+      fetchActivity()
+    }, 20000)
 
     if (!USE_FIXTURES && supabase != null) {
       const ch1 = supabase.channel('dash-patients')
@@ -95,7 +96,11 @@ export default function DashboardPage() {
         }).subscribe()
 
       const ch2 = supabase.channel('dash-resources')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'beds' }, () => { fetchSnapshot() })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'resources' }, () => {
+          fetchSnapshot()
+          fetchKpis()
+          getDepartmentStatus().then(setDepartments).catch(() => {})
+        })
         .subscribe()
 
       const ch3 = supabase.channel('dash-alerts')
@@ -107,10 +112,11 @@ export default function DashboardPage() {
         .subscribe()
 
       const ch5 = supabase.channel('dash-activity')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_log' }, () => { fetchActivity() })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => { fetchActivity() })
         .subscribe()
 
       return () => {
+        clearInterval(poll)
         if (supabase != null) {
           supabase.removeChannel(ch1)
           supabase.removeChannel(ch2)
@@ -120,6 +126,8 @@ export default function DashboardPage() {
         }
       }
     }
+
+    return () => clearInterval(poll)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -131,7 +139,9 @@ export default function DashboardPage() {
       fetchRecommendations()
       fetchSnapshot()
       fetchAlerts()
-    } catch(e) {
+      fetchActivity()
+      fetchKpis()
+    } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to approve')
     }
   }
@@ -141,7 +151,9 @@ export default function DashboardPage() {
       await rejectRecommendation(id, { rejectedBy: 'Hospital Operator', reason: 'Manually rejected from dashboard' })
       toast.success('Recommendation rejected')
       fetchRecommendations()
-    } catch(e) {
+      fetchActivity()
+      fetchQueue()
+    } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to reject')
     }
   }
@@ -150,7 +162,7 @@ export default function DashboardPage() {
     try {
       await acknowledgeAlert(alertId, 'Hospital Operator')
       fetchAlerts()
-    } catch(e) {
+    } catch (e) {
       toast.error('Failed to acknowledge alert')
     }
   }
@@ -161,7 +173,7 @@ export default function DashboardPage() {
       await generateRecommendation(patientId)
       toast.success('Recommendation ready', { id: 'gen' })
       fetchRecommendations()
-    } catch(e) {
+    } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to generate', { id: 'gen' })
     }
   }
@@ -169,96 +181,78 @@ export default function DashboardPage() {
   return (
     <>
       <PageHeader
-        title="Operations Command Center"
+        title="AegisOps Command Center"
         actions={
           <div className="flex gap-3">
-            <button 
-              onClick={() => setShowShiftReport(true)}
-              className="px-4 py-2 bg-white border border-border rounded-button text-sm font-semibold hover:bg-bg-page transition-colors text-text-secondary"
-            >
-              Shift Report
-            </button>
-            <button 
+            <button
               onClick={() => setShowSimulation(true)}
               className="px-4 py-2 bg-white border border-border rounded-button text-sm font-semibold hover:bg-bg-page transition-colors text-text-secondary"
             >
               Simulation
             </button>
-            <button 
+            <button
               onClick={() => setShowBriefing(true)}
               className="px-4 py-2 bg-ai text-white rounded-button text-sm font-semibold hover:bg-ai/90 transition-colors shadow-sm"
             >
               Briefing
             </button>
-            <button 
-              onClick={fetchAll}
-              className="px-4 py-2 bg-brand text-white rounded-button text-sm font-semibold hover:bg-brand-600 transition-colors shadow-sm flex items-center gap-2"
-            >
-              <span className="text-lg leading-none mt-[-2px]">↻</span> Refresh
-            </button>
           </div>
         }
       />
 
-      <motion.div 
-        className="grid grid-cols-12 gap-6 pb-12"
+      <motion.div
+        className="grid grid-cols-12 gap-5 pb-12 items-stretch"
         initial="hidden"
         animate="visible"
         variants={{
           hidden: { opacity: 0 },
-          visible: { opacity: 1, transition: { staggerChildren: 0.1 } }
+          visible: { opacity: 1, transition: { staggerChildren: 0.08 } }
         }}
       >
-        {/* Row 1: KPI Cards (4 cards) */}
         <motion.div className="col-span-12" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><KpiCards data={kpis} healthScore={healthScore?.score} /></ErrorBoundary>
+          <ErrorBoundary><KpiCards data={loading ? null : kpis} /></ErrorBoundary>
         </motion.div>
 
-        {/* Row 2: Charts */}
+        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
+          <ErrorBoundary><ResourceBars snapshot={loading ? null : snapshot} /></ErrorBoundary>
+        </motion.div>
+        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
+          <ErrorBoundary>
+            <AlertsPanel alerts={alerts} onAcknowledge={handleAcknowledge} loading={loading} />
+          </ErrorBoundary>
+        </motion.div>
+        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
+          <ErrorBoundary>
+            <DepartmentOccupancy departments={loading ? null : departments} />
+          </ErrorBoundary>
+        </motion.div>
+
+        <motion.div className="col-span-12" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
+          <ErrorBoundary>
+            <PatientQueue
+              patients={queue}
+              doctors={doctors}
+              onPatientClick={p => setSelectedPatientId(p.id)}
+              updatedPatientIds={updatedPatientIds}
+              loading={loading}
+            />
+          </ErrorBoundary>
+        </motion.div>
+
         <motion.div className="col-span-12 xl:col-span-8" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><OverviewChart data={charts?.admissions7d ?? null} /></ErrorBoundary>
-        </motion.div>
-        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><PriorityMixChart data={charts?.priorityMix ?? null} /></ErrorBoundary>
-        </motion.div>
-
-        {/* Row 3: Progress, List, Map replacement */}
-        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><ResourceBars snapshot={snapshot} /></ErrorBoundary>
-        </motion.div>
-        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><AlertsPanel alerts={alerts} onAcknowledge={handleAcknowledge} /></ErrorBoundary>
-        </motion.div>
-        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><DepartmentOccupancy departments={departments} /></ErrorBoundary>
-        </motion.div>
-
-        {/* Row 4: Data Table */}
-        <motion.div className="col-span-12" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
           <ErrorBoundary>
-            <PatientQueue 
-              patients={queue} 
-              onPatientClick={p => setSelectedPatientId(p.id)} 
-              updatedPatientIds={updatedPatientIds} 
+            <RecommendationFeed
+              recommendations={recommendations}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              loading={loading}
             />
           </ErrorBoundary>
         </motion.div>
-
-        {/* Row 5: AI & Timeline (Bottom section) */}
-        <motion.div className="col-span-12 xl:col-span-6" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
+        <motion.div className="col-span-12 xl:col-span-4" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
           <ErrorBoundary>
-            <RecommendationFeed 
-              recommendations={recommendations} 
-              onApprove={handleApprove} 
-              onReject={handleReject} 
-            />
+            <ActivityTimeline activities={activityLog} loading={loading} />
           </ErrorBoundary>
-        </motion.div>
-        <motion.div className="col-span-12 xl:col-span-3" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><ActivityTimeline activities={activityLog} /></ErrorBoundary>
-        </motion.div>
-        <motion.div className="col-span-12 xl:col-span-3" variants={{ hidden: { opacity: 0, y: 20 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}>
-          <ErrorBoundary><CopilotPanel /></ErrorBoundary>
         </motion.div>
       </motion.div>
 
@@ -270,7 +264,6 @@ export default function DashboardPage() {
 
       <BriefingModal open={showBriefing} onClose={() => setShowBriefing(false)} />
       <SimulationModal open={showSimulation} onClose={() => setShowSimulation(false)} />
-      <ShiftReportDrawer open={showShiftReport} onClose={() => setShowShiftReport(false)} />
     </>
   )
 }

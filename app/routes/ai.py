@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.database.supabase import supabase
 from app.services.ai_service import (
     generate_ai_recommendation,
     generate_alternative_plan,
     generate_briefing,
+    generate_copilot_reply,
     generate_shift_report,
     generate_simulation_insights,
 )
@@ -22,8 +25,22 @@ from app.services.ai_payload import (
     normalize_vitals,
 )
 from app.services.priority_engine import calculate_urgency
-from app.services.resource_service import build_resources_summary, fetch_resources
+from app.services.resource_service import (
+    build_doctors_list,
+    build_resources_summary,
+    enrich_summary_queue,
+    fetch_resources,
+)
 
+
+WAITING_STATUSES = {"WAITING", "AWAITING_REVIEW", "REGISTERED"}
+PENDING_REC_STATUSES = {
+    "PENDING_VALIDATION",
+    "AWAITING_HUMAN_APPROVAL",
+    "VALIDATION_FAILED",
+    "VALIDATED",
+    "PENDING",
+}
 
 router = APIRouter(tags=["AI operations"])
 
@@ -239,9 +256,16 @@ def frontend_recommendation(body: dict[str, Any]):
 
 @router.post("/api/ai/simulate")
 def simulate(body: dict[str, Any]):
-    """Run a read-only operational simulation."""
+    """Run a read-only operational simulation against live capacity."""
     rows = _safe_resource_rows()
     snapshot = build_resources_summary(rows)
+    try:
+        patients_res = supabase.table("patients").select(
+            "id,status,priority,priority_level,created_at"
+        ).execute()
+        snapshot = enrich_summary_queue(snapshot, patients_res.data or [])
+    except Exception:
+        pass
     return _ok(generate_simulation_insights(body, snapshot))
 
 
@@ -250,7 +274,41 @@ def briefing(body: dict[str, Any]):
     requested_by = str(body.get("requestedBy") or "Hospital Operator")
     rows = _safe_resource_rows()
     snapshot = build_resources_summary(rows)
-    return _ok(generate_briefing(requested_by, snapshot, _active_alerts()))
+    try:
+        patients_res = supabase.table("patients").select(
+            "id,status,priority,priority_level,created_at,urgency_score"
+        ).execute()
+        snapshot = enrich_summary_queue(snapshot, patients_res.data or [])
+    except Exception:
+        pass
+    pending = _pending_recommendations()
+    pending_count = len(pending)
+    try:
+        recs = supabase.table("recommendations").select("id,status,decision").execute()
+        pending_count = 0
+        for r in recs.data or []:
+            decision = str(r.get("decision") or "").lower()
+            status = str(r.get("status") or "").upper()
+            if decision in {"approved", "rejected", "overridden"}:
+                continue
+            if decision == "pending" or status in {
+                "AWAITING_HUMAN_APPROVAL",
+                "PENDING_VALIDATION",
+                "VALIDATED",
+                "PENDING",
+            }:
+                pending_count += 1
+    except Exception:
+        pending_count = len(pending)
+
+    return _ok(
+        generate_briefing(
+            requested_by,
+            snapshot,
+            _active_alerts(),
+            pending_recommendations=pending_count,
+        )
+    )
 
 
 @router.post("/api/ai/shift-report")
@@ -268,6 +326,35 @@ def shift_report(body: dict[str, Any]):
             _pending_recommendations(),
             _active_alerts(),
         )
+    )
+
+
+@router.post("/api/ai/copilot")
+def copilot(body: dict[str, Any]):
+    """Stream an operations answer from the live hospital snapshot (SSE)."""
+    message = str(body.get("message") or body.get("question") or "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="message is required")
+
+    snapshot = _live_operations_snapshot()
+    answer = generate_copilot_reply(message, snapshot)
+
+    def event_stream() -> Iterator[str]:
+        # Emit small chunks so the frontend typewriter effect works.
+        chunk_size = 24
+        for index in range(0, len(answer), chunk_size):
+            chunk = answer[index : index + chunk_size]
+            yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -535,6 +622,24 @@ def _active_alerts() -> list[dict[str, Any]]:
 def _pending_recommendations() -> list[dict[str, Any]]:
     try:
         response = (
+            supabase.table("recommendations")
+            .select("id,patient_id,status,decision,created_at")
+            .execute()
+        )
+        rows = []
+        for row in response.data or []:
+            decision = str(row.get("decision") or "").lower()
+            status = str(row.get("status") or "").upper()
+            if decision in {"approved", "rejected", "overridden"}:
+                continue
+            if decision == "pending" or status in PENDING_REC_STATUSES:
+                rows.append(row)
+        if rows:
+            return rows
+    except Exception:
+        pass
+    try:
+        response = (
             supabase.table("audit_logs")
             .select("id,patient_id,status")
             .eq("status", "PENDING_VALIDATION")
@@ -543,6 +648,75 @@ def _pending_recommendations() -> list[dict[str, Any]]:
         return response.data or []
     except Exception:
         return []
+
+
+def _queue_counts() -> dict[str, int]:
+    counts = {"p1Count": 0, "p2Count": 0, "p3Count": 0, "p4Count": 0}
+    try:
+        response = supabase.table("patients").select("id,priority,status").execute()
+        for row in response.data or []:
+            if str(row.get("status") or "").upper() not in WAITING_STATUSES:
+                continue
+            priority = str(row.get("priority") or "P4").upper()
+            key = {
+                "P1": "p1Count",
+                "P2": "p2Count",
+                "P3": "p3Count",
+                "P4": "p4Count",
+            }.get(priority)
+            if key:
+                counts[key] += 1
+    except Exception:
+        pass
+    return counts
+
+
+def _live_operations_snapshot() -> dict[str, Any]:
+    rows = _safe_resource_rows()
+    summary = build_resources_summary(rows)
+    try:
+        patients_res = supabase.table("patients").select(
+            "id,status,priority,priority_level,created_at"
+        ).execute()
+        summary = enrich_summary_queue(summary, patients_res.data or [])
+    except Exception:
+        queue = _queue_counts()
+        summary["queue"] = {**(summary.get("queue") or {}), **queue}
+
+    alerts = _active_alerts()
+    pending = _pending_recommendations()
+    doctors = build_doctors_list(rows)
+    return {
+        **summary,
+        "doctors": {
+            "available": [d for d in doctors if d.get("status") == "available"],
+            "all": doctors,
+        },
+        "alerts": [
+            {
+                "id": a.get("id"),
+                "type": a.get("type"),
+                "severity": a.get("severity"),
+                "message": a.get("message"),
+                "relatedPatientId": a.get("related_patient_id"),
+                "relatedResourceId": a.get("related_resource_id"),
+            }
+            for a in alerts
+        ],
+        "pendingRecommendations": [
+            {
+                "id": r.get("id"),
+                "patientId": r.get("patient_id"),
+                "status": r.get("status"),
+            }
+            for r in pending
+        ],
+        "waitingPatients": (summary.get("queue") or {}).get("waitingTotal")
+        or sum(
+            int((summary.get("queue") or {}).get(k) or 0)
+            for k in ("p1Count", "p2Count", "p3Count", "p4Count")
+        ),
+    }
 
 
 def _safe_resource_rows() -> list[dict[str, Any]]:

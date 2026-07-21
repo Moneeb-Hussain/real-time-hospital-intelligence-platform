@@ -2,11 +2,11 @@
 
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
-import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { motion } from 'framer-motion'
-import { LayoutDashboard, UserPlus, Brain, Building2, Users, Stethoscope, Activity, BarChart3, FileText, RefreshCw, Settings, ChevronLeft, ChevronRight, Heart, Bell, Plug } from 'lucide-react'
+import { LayoutDashboard, UserPlus, Brain, Building2, Users, Stethoscope, Activity, BarChart3, FileText, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { BrandLogo } from './BrandLogo'
 
 export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
   const [collapsed, setCollapsed] = useState(false)
@@ -66,18 +66,8 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
         { label: 'Simulation Engine', href: '/simulation', icon: Activity, badge: null, soon: false },
         { label: 'Analytics', href: '/analytics', icon: BarChart3, badge: null, soon: false },
         { label: 'Reports', href: '/reports', icon: FileText, badge: null, soon: false },
-        { label: 'Shift Handover', href: '/shift-handover', icon: RefreshCw, badge: null, soon: false },
       ]
     },
-    {
-      title: 'SYSTEM',
-      items: [
-        { label: 'System Alerts', href: '/alerts', icon: Bell, badge: null, soon: false },
-        { label: 'Integrations', href: '/integrations', icon: Plug, badge: null, soon: false },
-        { label: 'Admin Panel', href: '/admin', icon: Users, badge: null, soon: false },
-        { label: 'Settings', href: '/settings', icon: Settings, badge: null, soon: false },
-      ]
-    }
   ]
 
   return (
@@ -96,16 +86,8 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
           mobileOpen ? "translate-x-0 w-[264px] !w-[264px]" : "-translate-x-full md:!w-auto"
         )}
       >
-      <div className="flex items-center justify-center h-24 border-b border-border px-4 flex-shrink-0 overflow-hidden">
-        {!collapsed ? (
-          <div className="relative w-full h-24 scale-[1.7]">
-            <Image src="/logo.png" alt="Opus Pulse AI" fill className="object-contain" priority />
-          </div>
-        ) : (
-          <div className="relative w-12 h-12 scale-[1.5]">
-            <Image src="/logo.png" alt="Logo" fill className="object-cover object-left" priority />
-          </div>
-        )}
+      <div className="flex items-center h-16 border-b border-border px-3 flex-shrink-0 overflow-hidden">
+        <BrandLogo collapsed={collapsed && !mobileOpen} className="w-full" />
       </div>
 
       <div className="flex-1 overflow-y-auto py-4">
@@ -118,12 +100,15 @@ export function Sidebar({ pendingCount = 0 }: { pendingCount?: number }) {
             )}
             <div className="px-2 space-y-1">
               {section.items.map((item, i) => {
-                const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href)
+                const isActive =
+                  item.href === '/dashboard'
+                    ? pathname === '/dashboard' || pathname === '/'
+                    : pathname.startsWith(item.href)
                 const inner = (
                   <div className={cn('nav-item relative', isActive && 'active', item.soon && 'opacity-60 cursor-not-allowed')}>
                     <item.icon className="w-5 h-5 flex-shrink-0" />
                     {!collapsed && <span className="truncate flex-1">{item.label}</span>}
-                    {item.badge && item.badge > 0 && (
+                    {(item.badge ?? 0) > 0 && (
                       <span className="absolute top-1 right-1 bg-brand text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full shadow-sm">
                         {item.badge}
                       </span>
