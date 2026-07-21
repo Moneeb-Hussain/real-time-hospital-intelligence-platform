@@ -1,23 +1,18 @@
 from app.database.supabase import supabase
 
 async def check_available_resources():
-    """Check all available resources in the hospital"""
     try:
-        # Get all resources
         response = supabase.table('resources').select('*').execute()
         resources = response.data if response.data else []
         
-        # Filter by type
         beds = [r for r in resources if r.get('resource_type') == 'bed']
         doctors = [r for r in resources if r.get('resource_type') == 'doctor']
         equipment = [r for r in resources if r.get('resource_type') == 'equipment']
         
-        # Count available
         available_beds = [b for b in beds if b.get('is_available') == True]
         available_doctors = [d for d in doctors if d.get('is_available') == True]
         available_equipment = [e for e in equipment if e.get('is_available') == True]
         
-        # ICU and Emergency beds
         icu_beds = [b for b in beds if b.get('sub_type') == 'ICU' and b.get('is_available') == True]
         emergency_beds = [b for b in beds if b.get('sub_type') == 'emergency' and b.get('is_available') == True]
         
@@ -30,7 +25,6 @@ async def check_available_resources():
             'total_doctors': len(doctors),
             'total_equipment': len(equipment)
         }
-        
     except Exception as e:
         print(f"Error checking resources: {e}")
         return {

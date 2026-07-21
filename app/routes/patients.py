@@ -1,21 +1,34 @@
-from fastapi import APIRouter, HTTPException
-from app.schemas.patients import Patient
-from app.services.patient_service import save_patient
-from postgrest.exceptions import APIError
-from app.database.supabase import supabase
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
 
-router = APIRouter()
+class Vitals(BaseModel):
+    heartRate: int
+    oxygenSaturation: int
+    systolicBP: int
+    diastolicBP: int
+    temperature: float
 
-@router.post("/patients")
-def create_patient(patient: Patient):
-    try:
-        response = save_patient(patient.model_dump())
-        return {
-            "message": "Patient Saved Successfully",
-            "data": response.data
-        }
-    except APIError as e:
-        # Agar Supabase koi error dega toh Swagger pe exact message dikhega
-        raise HTTPException(status_code=400, detail=f"Supabase Error: {e.message}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+class PatientCreate(BaseModel):
+    name: str
+    age: int
+    arrivalType: str  # AMBULANCE, WALK_IN, REFERRAL
+    complaint: str
+    symptoms: List[str] = []
+    vitals: Vitals
+    consciousness: str  # ALERT, CONFUSED, UNCONSCIOUS
+
+class PatientResponse(BaseModel):
+    id: str
+    name: str
+    age: int
+    arrivalType: str
+    complaint: str
+    symptoms: List[str]
+    vitals: dict
+    consciousness: str
+    urgency_score: int
+    priority_level: str  # P1, P2, P3, P4
+    triggered_rules: List[str]
+    status: str
+    created_at: datetime
