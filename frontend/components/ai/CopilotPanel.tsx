@@ -46,40 +46,51 @@ export function CopilotPanel() {
     }
 
     try {
-      const res = await fetch('/api/ai/copilot', {
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ??
+        (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000')
+      const res = await fetch(`${baseUrl}/api/ai/copilot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message })
+        body: JSON.stringify({ message }),
       })
       if (!res.ok) throw new Error('Copilot unavailable')
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
       let fullText = ''
+      let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n').filter(l => l.startsWith('data: '))
-        for (const line of lines) {
-          const data = line.slice(6)
-          if (data === '[DONE]') break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n')
+        buffer = parts.pop() || ''
+        for (const line of parts) {
+          if (!line.startsWith('data: ')) continue
+          const data = line.slice(6).trim()
+          if (!data || data === '[DONE]') continue
           try {
             const parsed = JSON.parse(data)
+            if (parsed.error) throw new Error(parsed.error)
             if (parsed.chunk) {
               fullText += parsed.chunk
               setCurrentStreamText(fullText)
             }
-            if (parsed.error) throw new Error(parsed.error)
-          } catch {
-            // skip malformed
+          } catch (err) {
+            if (err instanceof Error && err.message !== 'Unexpected end of JSON input') {
+              // Only rethrow intentional API errors, not JSON parse noise
+              if (!err.message.includes('JSON')) throw err
+            }
           }
         }
       }
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', text: fullText }])
+
+      if (!fullText.trim()) throw new Error('Copilot returned an empty answer')
+      setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'ai', text: fullText }])
     } catch (e) {
       const err = e instanceof Error ? e.message : 'Copilot temporarily unavailable.'
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'ai', text: err }])
+      setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'ai', text: err }])
     } finally {
       setIsStreaming(false)
       setCurrentStreamText('')
