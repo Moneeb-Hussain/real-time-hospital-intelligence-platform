@@ -207,16 +207,16 @@ if __name__ == "__main__":
     print("🏥 HOSPITAL INTELLIGENCE PLATFORM")
     print("📦 Database Seeder")
     print("="*50)
-    
-    # Ask before clearing
-    choice = input("\n⚠️ Do you want to clear existing resources first? (y/n): ")
-    if choice.lower() == 'y':
+
+    # Non-interactive: pass --clear to wipe first, otherwise keep existing rows
+    should_clear = "--clear" in sys.argv
+    if should_clear:
         clear_resources()
-    
-    # Run seeder
+    elif sys.stdin.isatty():
+        choice = input("\n⚠️ Do you want to clear existing resources first? (y/n): ")
+        if choice.lower() == "y":
+            clear_resources()
+
     seed_database()
-    
-    # Verify
     verify_seeding()
-    
     print("\n✅ Done! Your database is ready! 🚀")

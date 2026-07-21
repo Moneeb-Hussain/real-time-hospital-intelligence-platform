@@ -1,7 +1,7 @@
 """Demo/mock APIs matching what the Next.js frontend currently calls.
 
-These return fixture-shaped JSON so the deployed dashboard works
-while the real Spec APIs are still being built.
+Resources/doctors/KPIs bed counts are read from Supabase when seeded.
+Patients/alerts/recommendations stay mocked until those tables are wired.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -9,6 +9,14 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
+from app.services.resource_service import (
+    build_department_status,
+    build_doctors_list,
+    build_kpis_from_resources,
+    build_resources_summary,
+    fetch_resources,
+)
 
 router = APIRouter()
 
@@ -23,6 +31,16 @@ def _ago(minutes: int) -> str:
 
 def ok(data: Any) -> dict:
     return {"success": True, "data": data}
+
+
+def _resources_or_none() -> list[dict[str, Any]] | None:
+    """Return DB rows, or None if unavailable / empty (caller may fall back to mock)."""
+    try:
+        rows = fetch_resources()
+        return rows if rows else None
+    except Exception:
+        return None
+
 
 
 PATIENTS = [
@@ -244,6 +262,18 @@ def api_health():
 
 @router.get("/api/dashboard/kpis")
 def dashboard_kpis():
+    rows = _resources_or_none()
+    if rows is not None:
+        kpis = build_kpis_from_resources(rows)
+        # Keep patient/rec counts from mock until patients table is wired
+        kpis["criticalPatients"] = 3
+        kpis["waitingPatients"] = 6
+        kpis["pendingRecommendations"] = 2
+        kpis["criticalTrend"] = 12
+        kpis["waitingTrend"] = -5
+        kpis["avgWaitMinutes"] = 19
+        kpis["avgWaitTrend"] = 8
+        return ok(kpis)
     return ok(
         {
             "criticalPatients": 3,
@@ -372,6 +402,9 @@ def recalculate_recommendation(rec_id: str, body: dict):
 
 @router.get("/api/resources/summary")
 def resources_summary():
+    rows = _resources_or_none()
+    if rows is not None:
+        return ok(build_resources_summary(rows))
     return ok(
         {
             "timestamp": _now(),
@@ -424,6 +457,9 @@ def resources_summary():
 
 @router.get("/api/departments/status")
 def departments_status():
+    rows = _resources_or_none()
+    if rows is not None:
+        return ok(build_department_status(rows))
     return ok(
         [
             {
@@ -468,6 +504,9 @@ def departments_status():
 
 @router.get("/api/doctors")
 def get_doctors():
+    rows = _resources_or_none()
+    if rows is not None:
+        return ok(build_doctors_list(rows))
     return ok(DOCTORS)
 
 
