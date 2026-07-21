@@ -6,7 +6,13 @@ from typing import Optional
 from app.database.supabase import supabase
 from app.routes.patients import router
 from app.routes.ai import router as ai_router
+<<<<<<< Updated upstream
 from app.routes.demo_api import router as demo_router
+=======
+#
+from app.routes.api_v1 import router as api_v1_router
+
+>>>>>>> Stashed changes
 
 app = FastAPI()
 
@@ -18,9 +24,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+<<<<<<< Updated upstream
 app.include_router(demo_router)
+=======
+# 2. Existing Routers
+>>>>>>> Stashed changes
 app.include_router(router)
 app.include_router(ai_router)
+
+# 3. NAYA API ROUTER MOUNT KARAIN (Priority 8 APIs)
+app.include_router(api_v1_router)
 
 
 @app.get("/")
