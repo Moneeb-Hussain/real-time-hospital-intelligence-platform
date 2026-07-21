@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.database.supabase import supabase
 from app.services.ai_service import (
     generate_ai_recommendation,
     generate_alternative_plan,
     generate_briefing,
+    generate_copilot_reply,
     generate_shift_report,
     generate_simulation_insights,
 )
@@ -22,8 +25,19 @@ from app.services.ai_payload import (
     normalize_vitals,
 )
 from app.services.priority_engine import calculate_urgency
-from app.services.resource_service import build_resources_summary, fetch_resources
+from app.services.resource_service import (
+    build_doctors_list,
+    build_resources_summary,
+    fetch_resources,
+)
 
+
+WAITING_STATUSES = {"WAITING", "AWAITING_REVIEW", "REGISTERED"}
+PENDING_REC_STATUSES = {
+    "PENDING_VALIDATION",
+    "AWAITING_HUMAN_APPROVAL",
+    "VALIDATION_FAILED",
+}
 
 router = APIRouter(tags=["AI operations"])
 
@@ -123,7 +137,23 @@ def validate_recommendation(recommendation_id: str):
 
     is_valid = not errors
     status = "AWAITING_HUMAN_APPROVAL" if is_valid else "VALIDATION_FAILED"
-    _update_audit_status(recommendation_id, status)
+    _update_recommendation(
+        recommendation_id,
+        {
+            "status": status,
+            "is_valid": is_valid,
+            "validation_errors": errors,
+            "validation_warnings": warnings,
+        },
+    )
+    _write_audit_event(
+        patient_id=audit.get("patient_id"),
+        action="recommendation_validated",
+        status=status,
+        recommendation=recommendation,
+        description=f"Validation {'passed' if is_valid else 'failed'}",
+        meta={"errors": errors, "warnings": warnings},
+    )
     return _ok(
         {
             "recommendationId": recommendation_id,
@@ -185,42 +215,56 @@ def recommendation_decision(recommendation_id: str, body: dict[str, Any]):
         }
 
     allocated: dict[str, Any] = {}
+    override_reason = body.get("overrideReason") or body.get("override_reason")
     if decision in {"APPROVED", "OVERRIDDEN"}:
         allocated = _allocate_recommendation(patient_id, recommendation)
         supabase.table("patients").update(
             {
-                "status": "assigned",
-                "hospital_area": recommendation.get("recommendedUnit"),
+                "status": "ASSIGNED",
+                "assigned_unit": recommendation.get("recommendedUnit"),
                 "assigned_bed_id": recommendation.get("recommendedBedId"),
                 "assigned_doctor_id": recommendation.get("recommendedDoctorId"),
+                "assigned_equipment_ids": recommendation.get("requiredEquipmentIds")
+                or [],
             }
         ).eq("id", patient_id).execute()
     else:
-        supabase.table("patients").update({"status": "waiting"}).eq(
+        supabase.table("patients").update({"status": "WAITING"}).eq(
             "id", patient_id
         ).execute()
 
     decided_at = _now()
-    try:
-        supabase.table("audit_logs").update(
-            {
-                "status": decision,
-                "recommendation": {
-                    **recommendation,
-                    "decision": decision,
-                    "reviewedBy": reviewed_by,
-                    "overrideReason": body.get("overrideReason"),
-                },
-            }
-        ).eq("id", recommendation_id).execute()
-    except Exception as exc:
-        print(f"[ai_routes] Could not persist decision audit: {exc}")
+    _update_recommendation(
+        recommendation_id,
+        {
+            "status": decision,
+            "decision": decision,
+            "reviewed_by": reviewed_by,
+            "override_reason": override_reason,
+            "override_allocation": allocation if decision == "OVERRIDDEN" else None,
+            "decided_at": decided_at,
+            "recommendation": recommendation,
+        },
+    )
+    _write_audit_event(
+        patient_id=patient_id,
+        action="recommendation_decision",
+        status=decision,
+        recommendation=recommendation,
+        actor=str(reviewed_by),
+        description=f"Recommendation {decision.lower()} by {reviewed_by}",
+        meta={
+            "recommendationId": recommendation_id,
+            "overrideReason": override_reason,
+            "allocatedResources": allocated,
+        },
+    )
 
     return _ok(
         {
             "recommendationId": recommendation_id,
             "decision": decision,
-            "patientStatus": "ALLOCATED" if allocated else "WAITING",
+            "patientStatus": "ASSIGNED" if allocated else "WAITING",
             "allocatedResources": allocated,
             "approvedAt": decided_at if decision in {"APPROVED", "OVERRIDDEN"} else None,
         }
@@ -240,17 +284,15 @@ def frontend_recommendation(body: dict[str, Any]):
 @router.post("/api/ai/simulate")
 def simulate(body: dict[str, Any]):
     """Run a read-only operational simulation."""
-    rows = _safe_resource_rows()
-    snapshot = build_resources_summary(rows)
+    snapshot = _live_operations_snapshot()
     return _ok(generate_simulation_insights(body, snapshot))
 
 
 @router.post("/api/ai/briefing")
 def briefing(body: dict[str, Any]):
     requested_by = str(body.get("requestedBy") or "Hospital Operator")
-    rows = _safe_resource_rows()
-    snapshot = build_resources_summary(rows)
-    return _ok(generate_briefing(requested_by, snapshot, _active_alerts()))
+    snapshot = _live_operations_snapshot()
+    return _ok(generate_briefing(requested_by, snapshot, snapshot.get("alerts") or []))
 
 
 @router.post("/api/ai/shift-report")
@@ -259,15 +301,44 @@ def shift_report(body: dict[str, Any]):
     shift_end = str(body.get("shiftEnd") or "")
     if not shift_start or not shift_end:
         raise HTTPException(status_code=422, detail="shiftStart and shiftEnd are required")
-    snapshot = build_resources_summary(_safe_resource_rows())
+    snapshot = _live_operations_snapshot()
     return _ok(
         generate_shift_report(
             shift_start,
             shift_end,
             snapshot,
-            _pending_recommendations(),
-            _active_alerts(),
+            snapshot.get("pendingRecommendations") or [],
+            snapshot.get("alerts") or [],
         )
+    )
+
+
+@router.post("/api/ai/copilot")
+def copilot(body: dict[str, Any]):
+    """Stream an operations answer from the live hospital snapshot (SSE)."""
+    message = str(body.get("message") or body.get("question") or "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="message is required")
+
+    snapshot = _live_operations_snapshot()
+    answer = generate_copilot_reply(message, snapshot)
+
+    def event_stream() -> Iterator[str]:
+        # Emit small chunks so the frontend typewriter effect works.
+        chunk_size = 24
+        for index in range(0, len(answer), chunk_size):
+            chunk = answer[index : index + chunk_size]
+            yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -306,13 +377,13 @@ def _waiting_queue_rows(exclude_patient_id: str) -> list[dict[str, Any]]:
     try:
         response = (
             supabase.table("patients")
-            .select("id,priority,priority_level,urgency_score,triage_score,status")
+            .select("id,priority,urgency_score,status,created_at")
             .execute()
         )
         rows = []
         for row in response.data or []:
             status = str(row.get("status") or "").upper()
-            if status not in {"WAITING", "AWAITING_REVIEW", "REGISTERED"}:
+            if status not in WAITING_STATUSES:
                 continue
             if str(row.get("id")) == str(exclude_patient_id):
                 continue
@@ -329,36 +400,91 @@ def _save_recommendation(
 ) -> str:
     generated_id = f"REC-{uuid4().hex[:10].upper()}"
     record = {
+        "id": generated_id,
         "patient_id": patient_id,
-        "action": "alternative_recommendation_generated" if parent_id else "recommendation_generated",
-        "recommendation": recommendation,
+        "parent_id": parent_id,
         "status": "PENDING_VALIDATION",
+        "recommendation": recommendation,
+        "is_valid": None,
+        "validation_errors": [],
+        "validation_warnings": [],
     }
     try:
-        response = supabase.table("audit_logs").insert(record).execute()
-        if response.data:
-            return str(response.data[0].get("id") or generated_id)
+        response = supabase.table("recommendations").insert(record).execute()
+        recommendation_id = (
+            str(response.data[0].get("id"))
+            if response.data
+            else generated_id
+        )
     except Exception as exc:
-        print(f"[ai_routes] Could not persist recommendation audit: {exc}")
-    return generated_id
+        print(f"[ai_routes] Could not persist recommendation: {exc}")
+        recommendation_id = generated_id
+
+    _write_audit_event(
+        patient_id=patient_id,
+        action=(
+            "alternative_recommendation_generated"
+            if parent_id
+            else "recommendation_generated"
+        ),
+        status="PENDING_VALIDATION",
+        recommendation=recommendation,
+        description=(
+            "Alternative recommendation generated"
+            if parent_id
+            else "Recommendation generated"
+        ),
+        meta={"recommendationId": recommendation_id, "parentId": parent_id},
+    )
+    return recommendation_id
 
 
 def _get_recommendation(recommendation_id: str) -> dict[str, Any]:
     response = (
-        supabase.table("audit_logs").select("*").eq("id", recommendation_id).execute()
+        supabase.table("recommendations")
+        .select("*")
+        .eq("id", recommendation_id)
+        .execute()
     )
     if not response.data:
         raise HTTPException(status_code=404, detail="Recommendation not found")
     return response.data[0]
 
 
-def _update_audit_status(recommendation_id: str, status: str) -> None:
+def _update_recommendation(recommendation_id: str, fields: dict[str, Any]) -> None:
     try:
-        supabase.table("audit_logs").update({"status": status}).eq(
+        payload = {**fields, "updated_at": _now()}
+        supabase.table("recommendations").update(payload).eq(
             "id", recommendation_id
         ).execute()
     except Exception as exc:
-        print(f"[ai_routes] Could not update recommendation status: {exc}")
+        print(f"[ai_routes] Could not update recommendation: {exc}")
+
+
+def _write_audit_event(
+    *,
+    patient_id: str | None,
+    action: str,
+    status: str | None = None,
+    recommendation: dict[str, Any] | None = None,
+    description: str | None = None,
+    actor: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    try:
+        supabase.table("audit_logs").insert(
+            {
+                "patient_id": patient_id,
+                "action": action,
+                "status": status,
+                "recommendation": recommendation or {},
+                "description": description,
+                "actor": actor,
+                "meta": meta or {},
+            }
+        ).execute()
+    except Exception as exc:
+        print(f"[ai_routes] Could not write audit event: {exc}")
 
 
 def _validate_resource(
@@ -426,14 +552,14 @@ def _allocate_recommendation(
     if doctor_id:
         doctor = by_id[str(doctor_id)]
         next_load = int(doctor.get("workload_count") or doctor.get("workload") or 0) + 1
-        try:
-            supabase.table("resources").update({"workload_count": next_load}).eq(
-                "id", doctor_id
-            ).execute()
-        except Exception:
-            supabase.table("resources").update({"workload": next_load}).eq(
-                "id", doctor_id
-            ).execute()
+        max_load = int(doctor.get("max_load") or 6)
+        update = {
+            "workload_count": next_load,
+            "assigned_to": patient_id,
+        }
+        if next_load >= max_load:
+            update["is_available"] = False
+        supabase.table("resources").update(update).eq("id", doctor_id).execute()
 
     equipment_ids = recommendation.get("requiredEquipmentIds") or []
     for equipment_id in equipment_ids:
@@ -535,14 +661,75 @@ def _active_alerts() -> list[dict[str, Any]]:
 def _pending_recommendations() -> list[dict[str, Any]]:
     try:
         response = (
-            supabase.table("audit_logs")
-            .select("id,patient_id,status")
-            .eq("status", "PENDING_VALIDATION")
+            supabase.table("recommendations")
+            .select("id,patient_id,status,created_at")
+            .in_("status", list(PENDING_REC_STATUSES))
             .execute()
         )
         return response.data or []
     except Exception:
         return []
+
+
+def _queue_counts() -> dict[str, int]:
+    counts = {"p1Count": 0, "p2Count": 0, "p3Count": 0, "p4Count": 0}
+    try:
+        response = supabase.table("patients").select("id,priority,status").execute()
+        for row in response.data or []:
+            if str(row.get("status") or "").upper() not in WAITING_STATUSES:
+                continue
+            priority = str(row.get("priority") or "P4").upper()
+            key = {
+                "P1": "p1Count",
+                "P2": "p2Count",
+                "P3": "p3Count",
+                "P4": "p4Count",
+            }.get(priority)
+            if key:
+                counts[key] += 1
+    except Exception:
+        pass
+    return counts
+
+
+def _live_operations_snapshot() -> dict[str, Any]:
+    rows = _safe_resource_rows()
+    summary = build_resources_summary(rows)
+    queue = _queue_counts()
+    summary["queue"] = {
+        **summary.get("queue", {}),
+        **queue,
+    }
+    alerts = _active_alerts()
+    pending = _pending_recommendations()
+    doctors = build_doctors_list(rows)
+    return {
+        **summary,
+        "doctors": {
+            "available": [d for d in doctors if d.get("status") == "available"],
+            "all": doctors,
+        },
+        "alerts": [
+            {
+                "id": a.get("id"),
+                "type": a.get("type"),
+                "severity": a.get("severity"),
+                "message": a.get("message"),
+                "relatedPatientId": a.get("related_patient_id"),
+                "relatedResourceId": a.get("related_resource_id"),
+            }
+            for a in alerts
+        ],
+        "pendingRecommendations": [
+            {
+                "id": r.get("id"),
+                "patientId": r.get("patient_id"),
+                "status": r.get("status"),
+            }
+            for r in pending
+        ],
+        "waitingPatients": sum(queue.values()),
+    }
 
 
 def _safe_resource_rows() -> list[dict[str, Any]]:

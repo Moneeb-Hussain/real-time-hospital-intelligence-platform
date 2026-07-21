@@ -46,7 +46,10 @@ export function CopilotPanel() {
     }
 
     try {
-      const res = await fetch('/api/ai/copilot', {
+      const baseUrl =
+        process.env.NEXT_PUBLIC_API_URL ??
+        (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000')
+      const res = await fetch(`${baseUrl}/api/ai/copilot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
