@@ -1,224 +1,247 @@
-import uuid
 from typing import List, Optional, Dict, Any
+
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
 from app.database.supabase import supabase
- 
-def calculate_triage_score(patient: dict) -> int:
-    """Calculates triage score based on patient vitals and condition."""
-    vitals = patient.get("vitals", {}) or {}
-    
-    hr = vitals.get("hr") or vitals.get("heart_rate", 75)
-    spo2 = vitals.get("spo2", 98)
-    
-    score = 50
-    if spo2 < 90 or hr > 130:
-        score += 40
-    elif spo2 < 95 or hr > 100:
-        score += 20
-        
-    return min(score, 100)
+from app.services.priority_engine import calculate_urgency
+
 router = APIRouter(prefix="/api", tags=["Spec APIs v1"])
 
-# --- SCHEMAS ---
+
 class Vitals(BaseModel):
-    hr: Optional[int] = None
-    bp: Optional[str] = None
-    spo2: Optional[int] = None
-    temp: Optional[float] = None
+    heartRate: int
+    oxygenSaturation: int
+    systolicBP: int
+    diastolicBP: int
+    temperature: float
+
 
 class PatientCreate(BaseModel):
     name: str
     age: int
-    gender: str
-    arrivalType: Optional[str] = None
-    complaint: Optional[str] = None
-    consciousness: Optional[str] = None
-    vitals: Optional[Vitals] = None
+    arrivalType: str = "WALK_IN"
+    complaint: str
+    symptoms: List[str] = Field(default_factory=list)
+    vitals: Vitals
+    consciousness: str = "ALERT"
+    gender: Optional[str] = None
 
-class DecisionRequest(BaseModel):
-    action: str  # "APPROVE" or "REJECT"
-    resource_id: Optional[str] = "res-icu"
 
-# --- 1. POST /api/patients ---
+class BulkImport(BaseModel):
+    patients: List[PatientCreate]
 
-# --- 1. POST /api/patients ---
+
+def _patient_row(patient: PatientCreate) -> dict:
+    return {
+        "name": patient.name,
+        "age": patient.age,
+        "gender": patient.gender,
+        "arrival_type": patient.arrivalType,
+        "complaint": patient.complaint,
+        "symptoms": patient.symptoms,
+        "vitals": patient.vitals.model_dump(),
+        "consciousness": patient.consciousness.upper(),
+        "status": "REGISTERED",
+    }
+
+
 @router.post("/patients", status_code=status.HTTP_201_CREATED)
 async def create_patient(patient: PatientCreate):
     try:
-        # Extract vitals safely
-        v = patient.vitals if patient.vitals else None
-        
-        payload = {
-            # "id": patient_id line YAHAN SE HATA DI HAI
-            "name": patient.name,
-            "age": patient.age,
-            "gender": patient.gender,
-            "arrivalType": patient.arrivalType or "Walk-in",
-            "complaint": patient.complaint or "General",
-            "consciousness": patient.consciousness or "Alert",
-            "heartrate": v.hr if v else None,
-            "bloodpressure": v.bp if v else None,
-            "spo2": v.spo2 if v else None,
-            "temperature": v.temp if v else None
-        }
-
-        res = supabase.table("patients").insert(payload).execute()
-        
+        res = supabase.table("patients").insert(_patient_row(patient)).execute()
         if not res.data:
             raise HTTPException(status_code=400, detail="Failed to insert patient into DB")
-            
-        return {"success": True, "patient": res.data[0]}
-        
+        row = res.data[0]
+        return {
+            "success": True,
+            "data": {
+                "patientId": str(row["id"]),
+                "status": row.get("status", "REGISTERED"),
+                "createdAt": row.get("created_at"),
+            },
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database insertion error: {str(e)}")
 
-# --- 2. POST /api/patients/import ---
-@router.post("/patients")
-async def create_patient(patient: PatientCreate):
-    try:
-        # Supabase Insert Operation
-        data = supabase.table("patients").insert(patient.model_dump()).execute()
-        return {"success": True, "data": data.data[0]}
-    except Exception as e:
-        # Silent fake response HATA DÍA! Real error bhejenge ab:
-        raise HTTPException(status_code=500, detail=f"Database insert failed: {str(e)}")
 
-# --- 3. POST /api/patients/{id}/evaluate ---
-@router.post("/patients/{id}/evaluate")
-async def evaluate_patient(id: str):
+@router.post("/patients/import")
+async def import_patients(payload: BulkImport):
+    inserted_ids: list[str] = []
+    failed = 0
+    for patient in payload.patients:
+        try:
+            res = supabase.table("patients").insert(_patient_row(patient)).execute()
+            if res.data:
+                inserted_ids.append(str(res.data[0]["id"]))
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return {
+        "success": True,
+        "data": {
+            "imported": len(inserted_ids),
+            "failed": failed,
+            "patientIds": inserted_ids,
+        },
+    }
+
+
+@router.post("/patients/{patient_id}/evaluate")
+async def evaluate_patient(patient_id: str):
     try:
-        # 1. Fetch patient from DB
-        patient_res = supabase.table("patients").select("*").eq("id", id).execute()
+        patient_res = supabase.table("patients").select("*").eq("id", patient_id).execute()
         if not patient_res.data:
             raise HTTPException(status_code=404, detail="Patient not found")
-        
+
         patient = patient_res.data[0]
-        
-        # 2. Logic / Rule engine evaluation
-        triage_score = calculate_triage_score(patient) # aapka existing logic function
-        priority = "High" if triage_score > 70 else "Medium"
-        
-        # 3. WRITE TO SUPABASE (Persistence)
-        update_res = supabase.table("patients").update({
-            "triage_score": triage_score,
-            "priority": priority
-        }).eq("id", id).execute()
-        
+        priority = calculate_urgency(
+            {
+                "age": patient.get("age"),
+                "complaint": patient.get("complaint"),
+                "symptoms": patient.get("symptoms") or [],
+                "consciousness": patient.get("consciousness") or "ALERT",
+                "vitals": patient.get("vitals") or {},
+            }
+        )
+
+        update_res = (
+            supabase.table("patients")
+            .update(
+                {
+                    "urgency_score": priority["score"],
+                    "priority": priority["level"],
+                    "triggered_rules": priority.get("reasons") or [],
+                    "status": "WAITING",
+                }
+            )
+            .eq("id", patient_id)
+            .execute()
+        )
+
         return {
             "success": True,
-            "patient_id": id,
-            "triage_score": triage_score,
-            "priority": priority,
-            "updated_patient": update_res.data[0]
+            "data": {
+                "patientId": patient_id,
+                "urgencyScore": priority["score"],
+                "priority": priority["level"],
+                "triggeredRules": priority.get("reasons") or [],
+                "queuePosition": 1,
+                "updatedPatient": (update_res.data or [None])[0],
+            },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
-    # --- 4. POST /api/recommendations/generate ---
-@router.post("/recommendations/generate")
-async def generate_recommendation(data: dict):
-    patient_id = data.get("patient_id")
-    try:
-        # Fetch patient from DB to ground recommendations in real context
-        p_res = supabase.table("patients").select("*").eq("id", patient_id).execute()
-        if not p_res.data:
-            raise HTTPException(status_code=404, detail="Patient not found")
-        
-        patient = p_res.data[0]
-        score = patient.get("triage_score", 50)
-        
-        # Real context-aware logic based on patient's triage score/priority
-        plan = "Admit to ICU & initiate immediate continuous monitoring." if score > 70 else "Assign to Ward & re-evaluate in 4 hours."
-        
-        return {
-            "success": True,
-            "patient_id": patient_id,
-            "recommendation": plan,
-            "priority": patient.get("priority", "Medium")
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Recommendation generation failed: {str(e)}")
 
-# --- 5. POST /api/recommendations/{id}/validate ---
-@router.post("/recommendations/{id}/validate")
-async def validate_recommendation(id: str):
-    try:
-        # Check actual beds/resources table in Supabase
-        res = supabase.table("resources").select("*").execute()
-        # Ensure available resources exist (e.g. available_beds > 0)
-        available_beds = sum([r.get("available", 0) for r in res.data]) if res.data else 0
-        
-        is_valid = available_beds > 0
-        return {
-            "recommendation_id": id,
-            "isValid": is_valid,
-            "available_beds": available_beds,
-            "message": "Resource capacity validated." if is_valid else "Insufficient beds/resources."
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
 
-# --- 6. PATCH /api/recommendations/{id}/decision ---
-@router.patch("/recommendations/{id}/decision")
-async def apply_decision(id: str, decision: dict):
-    status = decision.get("status") # e.g. "APPROVED" or "REJECTED"
-    try:
-        # Update recommendation decision status in DB
-        rec_res = supabase.table("recommendations").update({"status": status}).eq("id", id).execute()
-        
-        return {
-            "success": True,
-            "recommendation_id": id,
-            "status": status,
-            "data": rec_res.data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Decision update failed: {str(e)}")
+# Generate / validate / decision are owned by app.routes.ai (mounted first).
 
-# --- 7. GET /api/dashboard ---
+
 @router.get("/dashboard")
 async def get_dashboard():
     try:
-        # Fetch patients and resources directly from Supabase
         patients_res = supabase.table("patients").select("*").execute()
         resources_res = supabase.table("resources").select("*").execute()
-        
+        try:
+            alerts_res = supabase.table("alerts").select("*").eq("active", True).execute()
+            alerts = alerts_res.data or []
+        except Exception:
+            alerts = []
+
         patients = patients_res.data or []
         resources = resources_res.data or []
-        
-        total_patients = len(patients)
-        critical_patients = sum(1 for p in patients if p.get("priority") == "High" or (p.get("triage_score") or 0) > 70)
-        
+
+        waiting = [
+            p
+            for p in patients
+            if str(p.get("status") or "").upper()
+            in {"WAITING", "AWAITING_REVIEW", "REGISTERED"}
+        ]
+        critical = [p for p in waiting if p.get("priority") == "P1"]
+        beds = [r for r in resources if r.get("resource_type") == "bed"]
+        icu = [
+            b
+            for b in beds
+            if str(b.get("unit") or "").upper() == "ICU"
+            or str(b.get("id", "")).startswith("ICU")
+        ]
+        er = [
+            b
+            for b in beds
+            if "emergency" in str(b.get("unit") or "").lower()
+            or str(b.get("id", "")).startswith("ER")
+        ]
+
+        def occ(group: list[dict]) -> int:
+            if not group:
+                return 0
+            occupied = sum(1 for b in group if b.get("is_available") is not True)
+            return int((occupied / len(group)) * 100)
+
+        queue_preview = sorted(
+            [
+                {
+                    "patientId": str(p.get("id")),
+                    "priority": p.get("priority") or "P4",
+                    "urgencyScore": p.get("urgency_score") or 0,
+                }
+                for p in waiting
+            ],
+            key=lambda item: item["urgencyScore"],
+            reverse=True,
+        )[:5]
+
         return {
             "success": True,
-            "metrics": {
-                "total_patients": total_patients,
-                "critical_patients": critical_patients,
-                "stable_patients": total_patients - critical_patients,
-                "resources": resources
-            }
+            "data": {
+                "summary": {
+                    "totalPatients": len(patients),
+                    "waitingPatients": len(waiting),
+                    "criticalPatients": len(critical),
+                    "pendingApprovals": 0,
+                    "averageWaitTimeMinutes": 0,
+                },
+                "occupancy": {
+                    "icu": occ(icu),
+                    "emergency": occ(er),
+                    "observation": 0,
+                },
+                "alerts": [
+                    {
+                        "alertId": a.get("id"),
+                        "severity": a.get("severity"),
+                        "message": a.get("message"),
+                    }
+                    for a in alerts
+                ],
+                "queuePreview": queue_preview,
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Dashboard aggregation failed: {str(e)}")
 
-# --- 8. POST /api/simulations ---
+
 @router.post("/simulations")
 async def run_simulation(config: dict):
     try:
-        # Run dynamic simulation based on current DB state
-        patients_res = supabase.table("patients").select("id, triage_score, priority").execute()
+        patients_res = supabase.table("patients").select("id, urgency_score, priority").execute()
         patient_count = len(patients_res.data or [])
-        
-        surge_factor = config.get("surge_factor", 1.5)
+        surge_factor = float(config.get("surge_factor", 1.5))
         projected_load = int(patient_count * surge_factor)
-        
         return {
             "success": True,
-            "simulation_id": "sim_" + str(projected_load),
-            "current_patient_count": patient_count,
-            "projected_patient_load": projected_load,
-            "status": "COMPLETED",
-            "capacity_overflow_risk": projected_load > 50  # adjust threshold as needed
+            "data": {
+                "simulationId": f"SIM-{projected_load}",
+                "current_patient_count": patient_count,
+                "projected_patient_load": projected_load,
+                "status": "COMPLETED",
+                "capacity_overflow_risk": projected_load > 50,
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Simulation failed: {str(e)}")

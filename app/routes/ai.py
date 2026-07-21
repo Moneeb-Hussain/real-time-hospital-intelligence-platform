@@ -16,6 +16,11 @@ from app.services.ai_service import (
     generate_shift_report,
     generate_simulation_insights,
 )
+from app.services.ai_payload import (
+    build_ai_payload,
+    normalize_consciousness,
+    normalize_vitals,
+)
 from app.services.priority_engine import calculate_urgency
 from app.services.resource_service import build_resources_summary, fetch_resources
 
@@ -274,100 +279,45 @@ def _build_context(patient_id: str) -> dict[str, Any]:
 
     priority = {
         "score": patient.get("urgency_score") or patient.get("triage_score"),
-        "level": patient.get("priority_level") or patient.get("priority"),
+        "level": patient.get("priority") or patient.get("priority_level"),
         "reasons": patient.get("triggered_rules") or [],
     }
     if not priority["score"] or priority["level"] not in {"P1", "P2", "P3", "P4"}:
         calculated = calculate_urgency(_priority_input(patient))
         priority = calculated
+        try:
+            supabase.table("patients").update(
+                {
+                    "urgency_score": calculated.get("score"),
+                    "priority": calculated.get("level"),
+                    "triggered_rules": calculated.get("reasons") or [],
+                    "status": patient.get("status") or "WAITING",
+                }
+            ).eq("id", patient_id).execute()
+        except Exception:
+            pass
 
     rows = fetch_resources()
-    available = [row for row in rows if row.get("is_available") is True]
-    beds = [
-        {
-            "bedId": str(row.get("id")),
-            "unit": _unit_name(row),
-            "name": row.get("name") or row.get("resource_name"),
-        }
-        for row in available
-        if row.get("resource_type") == "bed"
-    ]
-    doctors = [
-        {
-            "doctorId": str(row.get("id")),
-            "name": row.get("name") or row.get("resource_name"),
-            "specialty": row.get("sub_type") or row.get("unit"),
-            "currentLoad": row.get("workload") or row.get("workload_count") or 0,
-        }
-        for row in available
-        if row.get("resource_type") == "doctor"
-    ]
-    equipment = [
-        {
-            "equipmentId": str(row.get("id")),
-            "name": row.get("name") or row.get("resource_name"),
-            "type": row.get("sub_type"),
-        }
-        for row in available
-        if row.get("resource_type") == "equipment"
-    ]
-    queue = _waiting_queue(patient_id)
-
-    return {
-        "patient": {
-            "patientId": str(patient.get("id")),
-            "age": patient.get("age"),
-            "arrivalType": patient.get("arrival_type") or patient.get("arrivalType"),
-            "complaint": patient.get("complaint") or patient.get("main_problem"),
-            "symptoms": patient.get("symptoms") or [],
-            "vitals": {
-                "heartRate": patient.get("heart_rate") or patient.get("heartrate"),
-                "oxygenSaturation": (
-                    patient.get("oxygen_level") or patient.get("oxygen") or patient.get("spo2")
-                ),
-                "systolicBP": patient.get("blood_pressure_systolic"),
-                "diastolicBP": patient.get("blood_pressure_diastolic"),
-                "temperature": patient.get("temperature"),
-            },
-            "consciousness": patient.get("consciousness") or (
-                "ALERT" if patient.get("is_conscious", True) else "UNCONSCIOUS"
-            ),
-        },
-        "ruleEngineResult": {
-            "urgencyScore": priority.get("score", 0),
-            "priority": priority.get("level", "P4"),
-            "triggeredRules": priority.get("reasons", []),
-        },
-        "resources": {
-            "availableBeds": beds,
-            "availableDoctors": sorted(doctors, key=lambda item: item["currentLoad"]),
-            "availableEquipment": equipment,
-            "icuBedsAvailable": sum(
-                1 for bed in beds if "icu" in bed["unit"].lower()
-            ),
-        },
-        "currentQueue": queue,
-    }
+    queue_rows = _waiting_queue_rows(patient_id)
+    return build_ai_payload(patient, priority, rows, queue_rows)
 
 
-def _waiting_queue(exclude_patient_id: str) -> list[dict[str, Any]]:
+def _waiting_queue_rows(exclude_patient_id: str) -> list[dict[str, Any]]:
     try:
         response = (
             supabase.table("patients")
-            .select("id,priority_level,priority,urgency_score,triage_score")
-            .eq("status", "waiting")
+            .select("id,priority,priority_level,urgency_score,triage_score,status")
             .execute()
         )
-        queue = [
-            {
-                "patientId": str(row.get("id")),
-                "priority": row.get("priority_level") or row.get("priority") or "P4",
-                "urgencyScore": row.get("urgency_score") or row.get("triage_score") or 0,
-            }
-            for row in (response.data or [])
-            if str(row.get("id")) != str(exclude_patient_id)
-        ]
-        return sorted(queue, key=lambda item: item["urgencyScore"], reverse=True)
+        rows = []
+        for row in response.data or []:
+            status = str(row.get("status") or "").upper()
+            if status not in {"WAITING", "AWAITING_REVIEW", "REGISTERED"}:
+                continue
+            if str(row.get("id")) == str(exclude_patient_id):
+                continue
+            rows.append(row)
+        return rows
     except Exception:
         return []
 
@@ -475,14 +425,15 @@ def _allocate_recommendation(
     doctor_id = recommendation.get("recommendedDoctorId")
     if doctor_id:
         doctor = by_id[str(doctor_id)]
-        supabase.table("resources").update(
-            {
-                "workload": int(
-                    doctor.get("workload") or doctor.get("workload_count") or 0
-                )
-                + 1
-            }
-        ).eq("id", doctor_id).execute()
+        next_load = int(doctor.get("workload_count") or doctor.get("workload") or 0) + 1
+        try:
+            supabase.table("resources").update({"workload_count": next_load}).eq(
+                "id", doctor_id
+            ).execute()
+        except Exception:
+            supabase.table("resources").update({"workload": next_load}).eq(
+                "id", doctor_id
+            ).execute()
 
     equipment_ids = recommendation.get("requiredEquipmentIds") or []
     for equipment_id in equipment_ids:
@@ -555,16 +506,21 @@ def _to_frontend_recommendation(
 
 
 def _priority_input(patient: dict[str, Any]) -> dict[str, Any]:
+    vitals = normalize_vitals(patient)
+    consciousness = normalize_consciousness(patient)
     return {
         "age": patient.get("age") or 50,
-        "oxygen_level": (
-            patient.get("oxygen_level") or patient.get("oxygen") or patient.get("spo2") or 98
-        ),
-        "blood_pressure_systolic": patient.get("blood_pressure_systolic") or 120,
-        "is_conscious": patient.get("is_conscious", True),
-        "main_problem": patient.get("main_problem") or patient.get("complaint") or "",
-        "heart_rate": patient.get("heart_rate") or patient.get("heartrate") or 80,
-        "temperature": patient.get("temperature") or 37,
+        "complaint": patient.get("complaint") or patient.get("main_problem") or "",
+        "symptoms": patient.get("symptoms") or [],
+        "consciousness": consciousness,
+        "vitals": vitals,
+        "oxygen_level": vitals.get("oxygenSaturation", 98),
+        "blood_pressure_systolic": vitals.get("systolicBP", 120),
+        "blood_pressure_diastolic": vitals.get("diastolicBP", 80),
+        "is_conscious": consciousness != "UNCONSCIOUS",
+        "main_problem": patient.get("complaint") or "",
+        "heart_rate": vitals.get("heartRate", 80),
+        "temperature": vitals.get("temperature", 37),
     }
 
 

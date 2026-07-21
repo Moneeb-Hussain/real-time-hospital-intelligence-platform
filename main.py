@@ -6,7 +6,6 @@ import os
 import uvicorn
 
 from app.database.supabase import supabase
-from app.routes.patients import router
 from app.routes.ai import router as ai_router
 from app.routes.demo_api import router as demo_router
 from app.routes.api_v1 import router as api_v1_router
@@ -26,7 +25,6 @@ app.add_middleware(
 app.include_router(ai_router)
 app.include_router(api_v1_router)
 app.include_router(demo_router)
-app.include_router(router)
 
 
 @app.get("/")

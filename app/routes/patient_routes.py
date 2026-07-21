@@ -11,7 +11,7 @@ router = APIRouter()
 # ============================================================
 # API 1: POST /api/patients - Create ONE patient
 # ============================================================
-@router.post("/patients", status_code=status.HTTP_201_CREATED)
+@router.post("/patient", status_code=status.HTTP_201_CREATED)
 async def create_patient(patient_data: dict):
     try:
         priority = calculate_urgency(patient_data)

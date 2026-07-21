@@ -26,32 +26,15 @@ def _initials(name: str) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
-def map_doctor(row: dict[str, Any]) -> dict[str, Any]:
-    workload = int(row.get("workload") or row.get("workload_count") or 0)
-    available = bool(row.get("is_available", True))
-    max_load = 6
-    status = "available" if available and workload < max_load else ("busy" if available else "off_shift")
-    return {
-        "id": str(row.get("id")),
-        "name": row.get("name") or row.get("resource_name") or "Unknown Doctor",
-        "specialty": (row.get("sub_type") or "emergency").replace("_", " ").title(),
-        "department": (row.get("sub_type") or "ER").upper() if row.get("sub_type") != "emergency" else "ER",
-        "onShift": available,
-        "maxLoad": max_load,
-        "currentLoad": workload,
-        "status": status,
-        "avatarInitials": _initials(row.get("name") or "NA"),
-    }
-
-
 def map_bed(row: dict[str, Any]) -> dict[str, Any]:
-    sub = (row.get("sub_type") or "ER").upper()
-    if sub in ("EMERGENCY", "ER"):
-        unit_code = "ER"
-    elif sub == "ICU":
+    unit = row.get("unit") or row.get("sub_type") or "ER"
+    unit_text = str(unit)
+    if "icu" in unit_text.lower() or str(row.get("id", "")).upper().startswith("ICU"):
         unit_code = "ICU"
-    elif sub in ("CCU", "WARD", "OT", "PEDS"):
-        unit_code = sub
+    elif "obs" in unit_text.lower():
+        unit_code = "WARD"
+    elif "ccu" in unit_text.lower():
+        unit_code = "CCU"
     else:
         unit_code = "ER"
     available = bool(row.get("is_available", True))
@@ -59,10 +42,29 @@ def map_bed(row: dict[str, Any]) -> dict[str, Any]:
         "id": str(row.get("id")),
         "unitId": f"unit-{unit_code.lower()}",
         "unitCode": unit_code,
-        "label": row.get("name") or row.get("resource_name") or "Bed",
+        "label": row.get("name") or row.get("resource_name") or str(row.get("id")),
         "status": "available" if available else "occupied",
         "patientId": str(row["assigned_to"]) if row.get("assigned_to") else None,
         "occupiedSince": None if available else row.get("last_updated"),
+    }
+
+
+def map_doctor(row: dict[str, Any]) -> dict[str, Any]:
+    workload = int(row.get("workload_count") or row.get("workload") or 0)
+    available = bool(row.get("is_available", True))
+    max_load = int(row.get("max_load") or 6)
+    status = "available" if available and workload < max_load else ("busy" if available else "off_shift")
+    name = row.get("name") or row.get("resource_name") or "Unknown Doctor"
+    return {
+        "id": str(row.get("id")),
+        "name": name,
+        "specialty": row.get("specialty") or row.get("unit") or row.get("sub_type") or "Emergency",
+        "department": (row.get("unit") or row.get("sub_type") or "ER"),
+        "onShift": available,
+        "maxLoad": max_load,
+        "currentLoad": workload,
+        "status": status,
+        "avatarInitials": _initials(name),
     }
 
 
