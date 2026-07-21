@@ -20,17 +20,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 3. NAYA API ROUTER MOUNT KARAIN (Priority 8 APIs)
-app.include_router(api_v1_router) 
-
-app.include_router(demo_router)
-# 2. Existing Routers
-app.include_router(router)
+# Mount authoritative AI routes before legacy/demo routes with overlapping paths.
 app.include_router(ai_router)
 
-
-
-
+# Existing spec, demo, and patient routes.
+app.include_router(api_v1_router)
+app.include_router(demo_router)
+app.include_router(router)
 @app.get("/")
 def home():
     return {"message": "Hospital Backend is Running"}
