@@ -1,24 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+from pydantic import BaseModel
+from typing import Optional
 import os
-from dotenv import load_dotenv
-from supabase import create_client, Client
+import uvicorn
 
-load_dotenv()
+from app.database.supabase import supabase
+from app.routes.patients import router
+from app.routes.ai import router as ai_router
+from app.routes.demo_api import router as demo_router
+from app.routes.api_v1 import router as api_v1_router
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("❌ Missing Supabase credentials")
-    exit(1)
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI(title="Hospital Intelligence Platform", version="1.0.0")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,21 +21,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Mount authoritative AI routes before legacy/demo routes with overlapping paths.
-app.include_router(ai_router)
 
-# Existing spec, demo, and patient routes.
+# Mount AI routes first so they win on overlapping paths.
+app.include_router(ai_router)
 app.include_router(api_v1_router)
 app.include_router(demo_router)
 app.include_router(router)
+
+
 @app.get("/")
 def home():
     return {"message": "Hospital Backend is Running"}
 
 
-# ----------------------------------------------------
-# RESOURCE ENDPOINTS (Supabase-backed)
-# ----------------------------------------------------
 class ResourceSchema(BaseModel):
     resource_type: str
     resource_name: str
@@ -65,56 +58,56 @@ def create_resource(resource: ResourceSchema):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ============================================================
-# DIRECT ROUTES (BEFORE MOUNTING)
-# ============================================================
 
 @app.get("/resources")
-async def get_resources():
-    """Get all resources directly"""
+def get_all_resources():
     try:
-        response = supabase.table('resources').select('*').execute()
+        response = supabase.table("resources").select("*").execute()
         return response.data
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ============================================================
-# MOUNT PATIENT ROUTES
-# ============================================================
 
-from app.routes.patient_routes import router
-app.include_router(router, prefix="/api")
+@app.post("/backend/validate-recommendation")
+def validate_ai_recommendation(rec: AIRecommendationSchema):
+    try:
+        resource_query = (
+            supabase.table("resources")
+            .select("*")
+            .eq("id", rec.recommended_resource_id)
+            .execute()
+        )
+        if not resource_query.data:
+            raise HTTPException(status_code=404, detail="Recommended resource does not exist.")
 
-# ============================================================
-# ROOT ENDPOINT
-# ============================================================
+        resource = resource_query.data[0]
+        if resource.get("is_available") is True:
+            name = resource.get("resource_name") or resource.get("name") or "resource"
+            return {
+                "status": "approved",
+                "message": f"Resource '{name}' is available. Safe to proceed.",
+                "alternative_plan_required": False,
+            }
 
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "message": "Hospital System is active!",
-        "endpoints": {
-            "health": "/api/health",
-            "patients": "/api/patients",
-            "patients_import": "/api/patients/import",
-            "evaluate": "/api/patients/{id}/evaluate",
-            "generate": "/api/recommendations/generate",
-            "validate": "/api/recommendations/validate",
-            "decision": "/api/recommendations/decision",
-            "dashboard": "/api/dashboard",
-            "resources": "/resources"
+        name = resource.get("resource_name") or resource.get("name") or "resource"
+        return {
+            "status": "flagged",
+            "message": f"Conflict detected! '{name}' is currently unavailable/occupied.",
+            "alternative_plan_required": True,
+            "alternative_action": (
+                f"Stabilize patient in the emergency area and place them first in the "
+                f"{rec.recommended_unit} waiting queue."
+            ),
         }
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# ============================================================
-# RUN SERVER
-# ============================================================
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     print(f"\n🚀 Server running on http://localhost:{port}")
-    print(f"📊 Dashboard: http://localhost:{port}/api/dashboard")
-    print(f"🏥 Health: http://localhost:{port}/api/health")
-    print(f"📦 Resources: http://localhost:{port}/resources\n")
     uvicorn.run(app, host="0.0.0.0", port=port)
